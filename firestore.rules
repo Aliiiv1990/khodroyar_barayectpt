@@ -1,0 +1,80 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened primitive helpers
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.email == 'ali.vakili990@gmail.com';
+    }
+
+    // Validation helper for UserListing
+    function isValidUserListing(data) {
+      return data.keys().hasAll(['id', 'type', 'model', 'year', 'source']) &&
+        data.keys().hasOnly([
+          'id', 'type', 'title', 'brand', 'model', 'year',
+          'price', 'priceFormatted', 'mileage', 'mileageFormatted',
+          'color', 'gearbox', 'bodyCondition', 'fuelType', 'city',
+          'phoneNumber', 'description', 'createdAt', 'source',
+          'creatorName', 'isTextOnly', 'fileDescription',
+          'imageThumbnailBase64', 'imageFullBase64', '_searchIndex'
+        ]) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.type is string && (data.type == 'sale' || data.type == 'buy_request') &&
+        data.model is string && data.model.size() <= 150 &&
+        data.year is int && data.year >= 1350 && data.year <= 1500 &&
+        data.source is string && (data.source == 'user' || data.source == 'admin') &&
+        (!('price' in data) || data.price is int) &&
+        (!('mileage' in data) || data.mileage is int) &&
+        (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 30)) &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 2000)) &&
+        (!('fileDescription' in data) || (data.fileDescription is string && data.fileDescription.size() <= 2000)) &&
+        (!('creatorName' in data) || (data.creatorName is string && data.creatorName.size() <= 100));
+    }
+
+    // Test doc for boot connectivity check
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // User & Colleague submitted listings (Real-time shared across all devices)
+    match /user_listings/{listingId} {
+      allow read: if true;
+      allow create: if isValidId(listingId) && isValidUserListing(incoming());
+      allow update: if isValidId(listingId) && isValidUserListing(incoming());
+      allow delete: if isValidId(listingId);
+    }
+
+    // Admin daily dataset metadata (archive of daily scraped/imported listings)
+    match /admin_dataset/{datasetId} {
+      allow read: if true;
+      allow write: if isValidId(datasetId);
+
+      // Chunks of listings for the dataset
+      match /chunks/{chunkId} {
+        allow read: if true;
+        allow write: if isValidId(chunkId);
+      }
+    }
+  }
+}

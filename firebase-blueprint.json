@@ -1,0 +1,154 @@
+{
+  "entities": {
+    "UserListing": {
+      "title": "UserListing",
+      "description": "Car listing submitted by a user or colleague for sale or buy request",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "type": {
+          "type": "string",
+          "enum": ["sale", "buy_request"]
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "brand": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "year": {
+          "type": "integer"
+        },
+        "price": {
+          "type": "integer"
+        },
+        "priceFormatted": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "mileage": {
+          "type": "integer"
+        },
+        "mileageFormatted": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "color": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "gearbox": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "bodyCondition": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "fuelType": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "city": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "phoneNumber": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "source": {
+          "type": "string",
+          "enum": ["user", "admin"]
+        },
+        "creatorName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "isTextOnly": {
+          "type": "boolean"
+        },
+        "fileDescription": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "required": ["id", "type", "model", "year", "source"]
+    },
+    "AdminDatasetMeta": {
+      "title": "AdminDatasetMeta",
+      "description": "Metadata for daily car listings archive published by admin",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "totalCount": {
+          "type": "integer"
+        },
+        "chunkCount": {
+          "type": "integer"
+        },
+        "publishedAt": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "publishedBy": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "required": ["id", "totalCount", "chunkCount", "publishedAt"]
+    },
+    "AdminDatasetChunk": {
+      "title": "AdminDatasetChunk",
+      "description": "Listing batch chunks belonging to the daily admin dataset",
+      "type": "object",
+      "properties": {
+        "chunkIndex": {
+          "type": "integer"
+        },
+        "listings": {
+          "type": "array"
+        }
+      },
+      "required": ["chunkIndex"]
+    }
+  },
+  "firestore": {
+    "/user_listings/{listingId}": {
+      "schema": "UserListing",
+      "description": "Public car listings submitted by users and colleagues"
+    },
+    "/admin_dataset/{datasetId}": {
+      "schema": "AdminDatasetMeta",
+      "description": "Admin daily dataset metadata published for all users"
+    },
+    "/admin_dataset/{datasetId}/chunks/{chunkId}": {
+      "schema": "AdminDatasetChunk",
+      "description": "Listing batch chunks belonging to the daily admin dataset"
+    }
+  }
+}

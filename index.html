@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>سامانه نیازمندی‌های خودرو (آگهی و استعلام)</title>
+    <meta name="description" content="پلتفرم فوق‌سریع و بهینه‌سازی‌شده برای ثبت، جستجو و استعلام ۵,۰۰۰ آگهی خودرو با مصرف حداقل رم و سازگار با گوشی‌های قدیمی" />
+    <meta property="og:title" content="سامانه نیازمندی‌های خودرو (آگهی و استعلام)" />
+    <meta property="og:description" content="پلتفرم فوق‌سریع و بهینه‌سازی‌شده برای ثبت، جستجو و استعلام ۵,۰۰۰ آگهی خودرو با مصرف حداقل رم و سازگار با گوشی‌های قدیمی" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+    <script>
+      // Prevent aggressive reloads on network drops or iframe disconnects
+      (function() {
+        if (typeof window === 'undefined') return;
+        // Intercept Vite development websocket so network blips do not cause reconnect reloads
+        var OrigWS = window.WebSocket;
+        if (OrigWS) {
+          window.WebSocket = function(url, protocols) {
+            var protoStr = Array.isArray(protocols) ? protocols.join(',') : (protocols || '');
+            var urlStr = String(url || '');
+            if (protoStr.indexOf('vite-hmr') !== -1 || protoStr.indexOf('vite-ping') !== -1 || urlStr.indexOf('token=') !== -1) {
+              return {
+                url: urlStr,
+                readyState: 1, // OPEN
+                send: function() {},
+                close: function() {},
+                addEventListener: function(evt, fn) {
+                  if (evt === 'open') setTimeout(function() { try { fn({ type: 'open' }); } catch(e) {} }, 10);
+                },
+                removeEventListener: function() {},
+                dispatchEvent: function() { return false; },
+                onopen: null, onclose: null, onerror: null, onmessage: null
+              };
+            }
+            return new OrigWS(url, protocols);
+          };
+          window.WebSocket.prototype = OrigWS.prototype;
+        }
+      })();
+    </script>
+  </head>
+  <body class="bg-slate-50 text-slate-900 font-sans antialiased selection:bg-blue-600 selection:text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

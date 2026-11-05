@@ -1,0 +1,10 @@
+{
+  "name": "Remix Remix خودرویار سریع",
+  "description": "اپلیکیشن فوق‌سریع و بهینه‌سازی‌شده برای جستجوی آگهی‌های خودرو، مخصوص گوشی‌های قدیمی با رابط کاربری بسیار ساده و روان.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
