@@ -14,7 +14,7 @@
 2. Attach a persistent disk named `data` mounted at `/data` (the `liara.json` file already declares this mount).
 3. Create a PostgreSQL DBaaS instance in Liara.
 4. Copy the database connection string from Liara's database connection page into the app environment variable `PG_URI`.
-5. Deploy this project ZIP. The start command builds the frontend and starts the TypeScript server.
+5. Deploy this project ZIP. Liara runs the `build` script automatically before `start`; the generated production bundle then starts.
 6. After deployment, open `/api/health`. It should report `dbBackend: postgresql`.
 
 The app accepts `DATABASE_URL` as an alternative to `PG_URI`.
