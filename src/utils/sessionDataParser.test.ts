@@ -454,3 +454,52 @@ test('parseZipArchive decodes base64-encoded text and images without extensions 
 });
 
 
+
+
+test('parseZipArchive rejects malformed source JSON instead of silently importing a partial archive', async () => {
+  const zip = new JSZip();
+  zip.file('session.json', '{ this is not valid JSON');
+  const archive = await zip.generateAsync({ type: 'uint8array' });
+
+  await assert.rejects(
+    () => parseZipArchive(archive, 'malformed.zip'),
+    /خواندن فایل JSON در ZIP ناموفق بود/
+  );
+});
+
+test('parseZipArchive rejects ZIP archives when source records are silently skipped', async () => {
+  const zip = new JSZip();
+  zip.file('session.json', JSON.stringify({
+    version: 2,
+    sellers: [{ id: 'record-without-displayable-fields' }],
+    buyers: [],
+  }));
+  const archive = await zip.generateAsync({ type: 'uint8array' });
+
+  await assert.rejects(
+    () => parseZipArchive(archive, 'incomplete.zip'),
+    /پردازش ZIP کامل نبود/
+  );
+});
+
+test('parseZipArchive keeps all valid source records and reports reconciliation counts', async () => {
+  const zip = new JSZip();
+  zip.file('session.json', JSON.stringify({
+    version: 2,
+    sellers: [
+      { id: 'valid-1', model: 'پژو ۲۰۷', year: 1403 },
+      { id: 'valid-2', model: 'دنا پلاس', year: 1402 },
+    ],
+    buyers: [
+      { id: 'buyer-1', model: 'تارا اتوماتیک', budget: 900000000 },
+    ],
+  }));
+  const archive = await zip.generateAsync({ type: 'uint8array' });
+
+  const result = await parseZipArchive(archive, 'complete.zip');
+  assert.equal(result.sourceRecordsCount, 3);
+  assert.equal(result.skippedRecordsCount, 0);
+  assert.equal(result.listings.length, 3);
+  assert.equal(result.sellersCount, 2);
+  assert.equal(result.buyersCount, 1);
+});
