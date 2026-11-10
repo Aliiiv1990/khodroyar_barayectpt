@@ -213,58 +213,91 @@ export async function publishListingsToLiara(
       }
     }
 
+    const uploadJobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const failedBatches: string[] = [];
     let totalSaved = sanitizedListings.length;
 
-    // Stage 1: Ultra-fast Metadata Push (< 1 second)
-    // Sends all car records without heavy base64 strings so the whole catalog is IMMEDIATELY live on all phones!
-    try {
-      const lightweightMetadata = sanitizedListings.map(({ imageThumbnailBase64, imageFullBase64, ...rest }) => ({
+    // Stage 1: Ultra-fast Metadata Push in reliable, verifiable batches
+    // Sends car records without heavy base64 strings so the whole catalog is IMMEDIATELY live on all phones!
+    const META_CHUNK_SIZE = 100;
+    const totalMetaChunks = Math.max(1, Math.ceil(sanitizedListings.length / META_CHUNK_SIZE));
+
+    for (let mIdx = 0; mIdx < totalMetaChunks; mIdx++) {
+      const metaChunk = sanitizedListings.slice(mIdx * META_CHUNK_SIZE, (mIdx + 1) * META_CHUNK_SIZE);
+      const batchId = `${uploadJobId}_meta_${mIdx + 1}`;
+      const idempotencyKey = `${batchId}_${metaChunk.length}`;
+
+      const lightweightChunk = metaChunk.map(({ imageThumbnailBase64, imageFullBase64, ...rest }) => ({
         ...rest,
         hasPhoto: Boolean(imageThumbnailBase64 || imageFullBase64),
         imageThumbnailBase64: (imageThumbnailBase64 || '').startsWith('data:image/svg+xml') ? imageThumbnailBase64 : '',
         imageFullBase64: '',
       }));
 
-      const metaResp = await fetch('/api/admin/sync-metadata', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          listings: lightweightMetadata,
-          append,
-          publishedBy,
-        }),
-      });
+      let chunkSuccess = false;
+      for (let attempt = 1; attempt <= 10; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 60000);
 
-      if (metaResp.ok) {
-        const metaRes = await metaResp.json();
-        totalSaved = metaRes.count || totalSaved;
-        if (onProgress) {
-          onProgress(25, 1, totalBatches);
+          const metaResp = await fetch('/api/admin/sync-metadata', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              listings: lightweightChunk,
+              append: true, // Always append/merge idempotently by id to prevent wiping on chunk 0
+              publishedBy,
+              jobId: uploadJobId,
+              batchId,
+              idempotencyKey,
+            }),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+
+          if (metaResp.ok) {
+            const metaRes = await metaResp.json();
+            totalSaved = metaRes.count || totalSaved;
+            chunkSuccess = true;
+            break;
+          }
+        } catch {
+          if (attempt < 10) {
+            const jitterDelay = Math.min(8000, attempt * 1200 + Math.random() * 500);
+            await new Promise((r) => setTimeout(r, jitterDelay));
+          }
         }
       }
-    } catch (e) {
-      console.warn('Metadata quick-sync fallback to full batch sync:', e);
+
+      if (!chunkSuccess) {
+        failedBatches.push(batchId);
+      }
+
+      if (onProgress) {
+        const metaProgress = Math.min(25, Math.round(((mIdx + 1) / totalMetaChunks) * 25));
+        onProgress(metaProgress, mIdx + 1, totalMetaChunks);
+      }
     }
 
-    // Stage 2: Stream images in resilient batches with retries
+    // Stage 2: Stream images in resilient lightweight batches (8 items) with retries and mediaId sharing
     const itemsWithImages = sanitizedListings.filter(
       (l) => (l.imageThumbnailBase64 && l.imageThumbnailBase64.length > 50) || (l.imageFullBase64 && l.imageFullBase64.length > 50)
     );
-    const IMAGE_BATCH_SIZE = 35;
+    const IMAGE_BATCH_SIZE = 8;
     const totalImgBatches = Math.max(1, Math.ceil(itemsWithImages.length / IMAGE_BATCH_SIZE));
 
     for (let i = 0; i < totalImgBatches; i++) {
       const batchSlice = itemsWithImages.slice(i * IMAGE_BATCH_SIZE, (i + 1) * IMAGE_BATCH_SIZE);
+      const batchId = `${uploadJobId}_img_${i + 1}`;
       const imagesPayload = batchSlice.map((item) => ({
         id: item.id,
+        mediaId: item.mediaId || item.imageFileName,
         thumb: item.imageThumbnailBase64,
         full: item.imageFullBase64,
       }));
 
       let batchSuccess = false;
-      let lastError: any = null;
-
-      for (let attempt = 1; attempt <= 4; attempt++) {
+      for (let attempt = 1; attempt <= 10; attempt++) {
         let timer: NodeJS.Timeout | null = null;
         try {
           const controller = new AbortController();
@@ -273,7 +306,11 @@ export async function publishListingsToLiara(
           const resp = await fetch('/api/admin/sync-images', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ images: imagesPayload }),
+            body: JSON.stringify({
+              images: imagesPayload,
+              jobId: uploadJobId,
+              batchId,
+            }),
             signal: controller.signal,
           });
 
@@ -286,6 +323,8 @@ export async function publishListingsToLiara(
                 listings: batchSlice,
                 append: true,
                 publishedBy,
+                jobId: uploadJobId,
+                batchId,
               }),
               signal: controller.signal,
             });
@@ -296,20 +335,33 @@ export async function publishListingsToLiara(
 
           batchSuccess = true;
           break;
-        } catch (err: any) {
-          lastError = err;
-          if (attempt < 4) {
-            await new Promise((r) => setTimeout(r, attempt * 1200));
+        } catch {
+          if (attempt < 10) {
+            const jitterDelay = Math.min(8000, attempt * 1200 + Math.random() * 600);
+            await new Promise((r) => setTimeout(r, jitterDelay));
           }
         } finally {
           if (timer) clearTimeout(timer);
         }
       }
 
+      if (!batchSuccess) {
+        failedBatches.push(batchId);
+      }
+
       if (onProgress) {
         const percent = Math.min(100, 25 + Math.round(((i + 1) / totalImgBatches) * 75));
         onProgress(percent, i + 1, totalImgBatches);
       }
+    }
+
+    // Strict validation: Never report 100% false success if any batch failed!
+    if (failedBatches.length > 0) {
+      return {
+        success: false,
+        message: `آپلود ناقص ماند: ${failedBatches.length} بسته با خطای شبکه مواجه شد و ذخیره نگردید. لطفاً اتصال اینترنت را بررسی و مجدداً امتحان نمایید.`,
+        count: totalSaved,
+      };
     }
 
     return {
@@ -326,6 +378,51 @@ export async function publishListingsToLiara(
       success: false,
       message: `خطا در ذخیره‌سازی در لیارا: ${cleanMessage}`,
     };
+  }
+}
+
+/**
+ * Server-First authoritative listing deletion with tombstones
+ * Ensures the ad is deleted on the server first, so other devices purge it during sync
+ */
+export async function deleteListingFromLiara(id: string): Promise<{ success: boolean; wasRemoved?: boolean }> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+
+    const resp = await fetch(`/api/listings/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (!resp.ok) return { success: false };
+    const data = await resp.json();
+    return { success: Boolean(data?.success), wasRemoved: Boolean(data?.wasRemoved) };
+  } catch (err) {
+    console.warn('Could not delete listing from Liara database:', err);
+    return { success: false };
+  }
+}
+
+/**
+ * Verifies exact database record counts and consistency on Liara
+ */
+export async function verifyServerIntegrity(): Promise<{
+  success: boolean;
+  totalListings?: number;
+  salesCount?: number;
+  buysCount?: number;
+  revision?: number;
+  batches?: Record<string, number>;
+} | null> {
+  try {
+    const resp = await fetch(`/api/admin/verify-integrity?_t=${Date.now()}`);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch {
+    return null;
   }
 }
 
@@ -611,4 +708,198 @@ export async function downloadLiaraDeploymentZip(onProgress?: (percent: number) 
   a.remove();
   URL.revokeObjectURL(url);
   if (onProgress) onProgress(100);
+}
+
+// -----------------------------------------------------------------------------
+// Resilient Resumable Chunked Uploader Engine for Liara Cloud
+// -----------------------------------------------------------------------------
+
+function sleepAsync(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ensureConnectionAvailable(maxWaitMs = 30000): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        window.removeEventListener('online', handleOnline);
+        resolve(false);
+      }, maxWaitMs);
+      const handleOnline = () => {
+        clearTimeout(timer);
+        window.removeEventListener('online', handleOnline);
+        resolve(true);
+      };
+      window.addEventListener('online', handleOnline);
+    });
+  }
+  return true;
+}
+
+/**
+ * Resilient Chunked Resumable ZIP file uploader for Liara Cloud.
+ * Slices large 50MB-100MB+ archives into 1.5MB chunks.
+ * Features 15 automatic exponential retries per chunk and network pause/resume,
+ * guaranteeing successful transmission over Iranian mobile/cellular connections!
+ */
+export async function uploadZipFileToLiara(
+  file: File | Blob,
+  batchName?: string,
+  onProgress?: (percent: number, message?: string) => void
+): Promise<{
+  success: boolean;
+  message: string;
+  total?: number;
+  batchCount?: number;
+  sellersCount?: number;
+  buyersCount?: number;
+  extractedImagesCount?: number;
+}> {
+  const cleanBatchName = batchName || (file instanceof File ? file.name : `car_session_${Date.now()}.zip`);
+  const CHUNK_SIZE = 1.5 * 1024 * 1024; // 1.5 MB resilient chunks
+  const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+  const uploadId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+  // Step 1: Initialize session with server
+  if (onProgress) onProgress(1, 'در حال راه‌اندازی نشست ارسال تکه‌ای به لیارا...');
+
+  let receivedChunks = new Set<number>();
+  try {
+    const initController = new AbortController();
+    const initTimer = setTimeout(() => initController.abort(), 20000);
+    const initResp = await fetch('/api/admin/upload-chunk/init', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        uploadId,
+        fileName: cleanBatchName,
+        fileSize: file.size,
+        totalChunks,
+        batchName: cleanBatchName,
+        publishedBy: 'مدیر نمایشگاه',
+      }),
+      signal: initController.signal,
+    });
+    clearTimeout(initTimer);
+
+    if (initResp.ok) {
+      const initData = await initResp.json();
+      if (Array.isArray(initData.receivedChunks)) {
+        receivedChunks = new Set(initData.receivedChunks);
+      }
+    }
+  } catch (initErr) {
+    console.warn('Chunked init failed, will attempt chunk uploads directly:', initErr);
+  }
+
+  // Step 2: Upload each chunk with up to 15 retries and automatic resume
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+    if (receivedChunks.has(chunkIndex)) {
+      if (onProgress) {
+        const pct = Math.min(94, Math.round(((chunkIndex + 1) / totalChunks) * 94));
+        onProgress(pct, `تکه ${chunkIndex + 1} از ${totalChunks} قبلاً ذخیره شده است.`);
+      }
+      continue;
+    }
+
+    const start = chunkIndex * CHUNK_SIZE;
+    const end = Math.min(file.size, (chunkIndex + 1) * CHUNK_SIZE);
+    const chunkBlob = file.slice(start, end);
+
+    let chunkUploaded = false;
+    let lastError = '';
+
+    for (let attempt = 1; attempt <= 15; attempt++) {
+      await ensureConnectionAvailable(15000);
+
+      try {
+        if (onProgress) {
+          const pct = Math.min(94, Math.round((chunkIndex / totalChunks) * 94));
+          const retryNotice = attempt > 1 ? ` (تلاش مجدد ${attempt}/15)` : '';
+          onProgress(pct, `ارسال تکه ${chunkIndex + 1} از ${totalChunks} (${pct}٪)${retryNotice}...`);
+        }
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 60000);
+
+        const resp = await fetch(
+          `/api/admin/upload-chunk?uploadId=${encodeURIComponent(uploadId)}&chunkIndex=${chunkIndex}&totalChunks=${totalChunks}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: chunkBlob,
+            signal: controller.signal,
+          }
+        );
+        clearTimeout(timer);
+
+        if (resp.ok) {
+          chunkUploaded = true;
+          receivedChunks.add(chunkIndex);
+          if (onProgress) {
+            const pct = Math.min(94, Math.round(((chunkIndex + 1) / totalChunks) * 94));
+            onProgress(pct, `تکه ${chunkIndex + 1} از ${totalChunks} با موفقیت دریافت شد.`);
+          }
+          break;
+        } else {
+          lastError = `خطای سرور (${resp.status})`;
+        }
+      } catch (err: any) {
+        lastError = err.message || 'خطای شبکه یا قطعی موقت اینترنت';
+      }
+
+      if (attempt < 15) {
+        const delay = Math.min(10000, 1000 * Math.pow(1.5, attempt - 1) + Math.random() * 500);
+        await sleepAsync(delay);
+      }
+    }
+
+    if (!chunkUploaded) {
+      return {
+        success: false,
+        message: `ارسال تکه شماره ${chunkIndex + 1} از ${totalChunks} به دلیل نوسان شبکه متوقف شد (${lastError}). لطفاً مجدداً دکمه را بزنید؛ ارسال دقیقاً از همین تکه ادامه می‌یابد.`,
+      };
+    }
+  }
+
+  // Step 3: Finalize stitching and extraction on server
+  if (onProgress) onProgress(95, 'تمامی تکه‌ها دریافت شدند. در حال استخراج و ذخیره‌سازی تصاویر در دیسک دائمی...');
+
+  try {
+    const finalController = new AbortController();
+    const finalTimer = setTimeout(() => finalController.abort(), 180000);
+
+    const finalResp = await fetch('/api/admin/upload-chunk/finalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        uploadId,
+        batchName: cleanBatchName,
+        publishedBy: 'مدیر سیستم (آپلود تکه‌ای)',
+      }),
+      signal: finalController.signal,
+    });
+    clearTimeout(finalTimer);
+
+    if (!finalResp.ok) {
+      let errText = 'خطا در نهایی‌سازی فایل زیپ در سرور';
+      try {
+        const errJson = await finalResp.json();
+        if (errJson.error) errText = errJson.error;
+      } catch {}
+      return {
+        success: false,
+        message: `${errText} (کد وضعیت ${finalResp.status})`,
+      };
+    }
+
+    const res = await finalResp.json();
+    if (onProgress) onProgress(100, 'فایل و عکس‌ها با موفقیت در دیسک دائمی لیارا ثبت شدند.');
+    return res;
+  } catch (err: any) {
+    return {
+      success: false,
+      message: `خطا در پردازش نهایی در سرور: ${err.message || 'مهلت زمانی به پایان رسید'}`,
+    };
+  }
 }

@@ -445,7 +445,7 @@ test('parseZipArchive decodes base64-encoded text and images without extensions 
 
   // Check that base64 text was decoded correctly into fileDescription
   const parsListing = result.listings.find((l) => l.id === 's-multi-1')!;
-  assert.ok(parsListing.fileDescription.includes('پارس تیوفایو مشکی'));
+  assert.ok((parsListing.fileDescription || '').includes('پارس تیوفایو مشکی'));
   assert.equal(parsListing.isTextOnly, true);
 
   // Check that base64 image was assigned properly to imageThumbnailBase64

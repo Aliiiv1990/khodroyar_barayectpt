@@ -9794,9 +9794,9 @@ var require_load = __commonJS({
 var require_lib3 = __commonJS({
   "node_modules/jszip/lib/index.js"(exports, module) {
     "use strict";
-    function JSZip() {
-      if (!(this instanceof JSZip)) {
-        return new JSZip();
+    function JSZip3() {
+      if (!(this instanceof JSZip3)) {
+        return new JSZip3();
       }
       if (arguments.length) {
         throw new Error("The constructor with parameters has been removed in JSZip 3.0, please check the upgrade guide.");
@@ -9805,7 +9805,7 @@ var require_lib3 = __commonJS({
       this.comment = null;
       this.root = "";
       this.clone = function() {
-        var newObj = new JSZip();
+        var newObj = new JSZip3();
         for (var i in this) {
           if (typeof this[i] !== "function") {
             newObj[i] = this[i];
@@ -9814,24 +9814,924 @@ var require_lib3 = __commonJS({
         return newObj;
       };
     }
-    JSZip.prototype = require_object();
-    JSZip.prototype.loadAsync = require_load();
-    JSZip.support = require_support();
-    JSZip.defaults = require_defaults();
-    JSZip.version = "3.10.2";
-    JSZip.loadAsync = function(content, options) {
-      return new JSZip().loadAsync(content, options);
+    JSZip3.prototype = require_object();
+    JSZip3.prototype.loadAsync = require_load();
+    JSZip3.support = require_support();
+    JSZip3.defaults = require_defaults();
+    JSZip3.version = "3.10.2";
+    JSZip3.loadAsync = function(content, options) {
+      return new JSZip3().loadAsync(content, options);
     };
-    JSZip.external = require_external();
-    module.exports = JSZip;
+    JSZip3.external = require_external();
+    module.exports = JSZip3;
   }
 });
 
 // server.ts
+var import_jszip2 = __toESM(require_lib3(), 1);
 import express from "express";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+
+// src/utils/sessionDataParser.ts
+var import_jszip = __toESM(require_lib3(), 1);
+
+// src/utils/persianSearch.ts
+function normalizePersianText(input) {
+  if (!input) return "";
+  return input.toString().replace(/[\u064A\u0649\u0626]/g, "\u06CC").replace(/[\u0643]/g, "\u06A9").replace(/[\u0629]/g, "\u0647").replace(/[\u0622\u0623\u0625\u0671]/g, "\u0627").replace(/[\u0624]/g, "\u0648").replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 1776)).replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 1632)).replace(/[\u064B-\u065F\u0670]/g, "").replace(/[\u200C\u200B\u200E\u200F\u00A0]/g, " ").toLowerCase().replace(/\s+/g, " ").trim();
+}
+function buildSearchIndex(listing) {
+  const phoneVariants = [];
+  if (listing.phoneNumber && listing.phoneNumber !== "\u062B\u0628\u062A \u0646\u0634\u062F\u0647") {
+    phoneVariants.push(listing.phoneNumber);
+    if (listing.phoneNumber.startsWith("0")) {
+      phoneVariants.push("98" + listing.phoneNumber.slice(1));
+      phoneVariants.push(listing.phoneNumber.slice(1));
+    }
+  }
+  const rawCombined = [
+    listing.title,
+    listing.brand,
+    listing.model,
+    listing.year > 0 ? listing.year : "",
+    listing.color,
+    listing.city,
+    listing.gearbox,
+    listing.bodyCondition,
+    listing.fuelType,
+    listing.priceFormatted,
+    listing.description,
+    listing.fileDescription,
+    listing.imageFileName ? listing.imageFileName.replace(/_/g, " ") : "",
+    ...phoneVariants
+  ].join(" ");
+  let normalized = normalizePersianText(rawCombined);
+  if (normalized.includes("\u067E\u0627\u0631\u0633") || normalized.includes("\u067E\u0631\u0634\u06CC\u0627")) {
+    normalized += " \u067E\u0627\u0631\u0633 \u067E\u0631\u0634\u06CC\u0627";
+  }
+  if (normalized.includes("\u0627\u0644\u0646\u062A\u0631\u0627") || normalized.includes("\u0627\u0644\u0627\u0646\u062A\u0631\u0627")) {
+    normalized += " \u0627\u0644\u0646\u062A\u0631\u0627 \u0627\u0644\u0627\u0646\u062A\u0631\u0627";
+  }
+  if (normalized.includes("\u0627\u0644 90") || normalized.includes("\u0627\u064490") || normalized.includes("\u062A\u0646\u062F\u0631") || normalized.includes("l90")) {
+    normalized += " \u0627\u0644 90 \u0627\u064490 \u062A\u0646\u062F\u0631 90 l90";
+  }
+  if (normalized.includes("\u0627\u06CC \u0627\u0686\u0648") || normalized.includes("\u0627\u06CC\u0645\u0627")) {
+    normalized += " \u0644\u0627\u0645\u0627\u0631\u06CC \u0627\u06CC\u0645\u0627 \u0627\u06CC \u0627\u0686\u0648";
+  }
+  if (normalized.includes("h30") || normalized.includes("\u0627\u0686 \u0633\u06CC")) {
+    normalized += " \u0627\u0686 \u0633\u06CC \u06A9\u0631\u0627\u0633 h30 \u062F\u0627\u0646\u06AF \u0641\u0646\u06AF";
+  }
+  return normalized;
+}
+
+// src/utils/dataPruner.ts
+var MAX_RETENTION_DAYS = 4;
+var FOUR_DAYS_MS = MAX_RETENTION_DAYS * 24 * 60 * 60 * 1e3;
+function toPersianDigits(value) {
+  if (value === void 0 || value === null) return "";
+  const str = value.toString();
+  return str.replace(/\d/g, (d) => String.fromCharCode(d.charCodeAt(0) + 1728));
+}
+function formatTomanPrice(amount) {
+  if (amount <= 0) return "\u062A\u0648\u0627\u0641\u0642\u06CC";
+  const formatted = amount.toLocaleString("en-US");
+  return `${toPersianDigits(formatted)} \u062A\u0648\u0645\u0627\u0646`;
+}
+
+// src/utils/sellerDataParser.ts
+function normalizeSinglePhoneCandidate(raw) {
+  const normalized = normalizePersianText(raw).trim();
+  if (!normalized) return "\u062B\u0628\u062A \u0646\u0634\u062F\u0647";
+  const spaced = normalized.replace(/[_.\-\/\\|,;:]/g, " ");
+  const mIntl = spaced.match(/(?:(?:\+|00)?98)(\d{10})(?!\d)/);
+  if (mIntl && mIntl[1]) {
+    const formatted = "0" + mIntl[1];
+    if (isValidIranian11DigitNumber(formatted)) {
+      return formatted;
+    }
+  }
+  const m11 = spaced.match(/(?<!\d)(0\d{10})(?!\d)/);
+  if (m11 && m11[1]) {
+    const formatted = m11[1];
+    if (isValidIranian11DigitNumber(formatted)) {
+      return formatted;
+    }
+  }
+  const m10 = spaced.match(/(?<!\d)(9\d{9})(?!\d)/);
+  if (m10 && m10[1]) {
+    const formatted = "0" + m10[1];
+    if (isValidIranian11DigitNumber(formatted)) {
+      return formatted;
+    }
+  }
+  const cleanedDigits = normalized.replace(/[^\d]/g, "");
+  if (cleanedDigits.startsWith("98") && cleanedDigits.length === 12) {
+    const formatted = "0" + cleanedDigits.slice(2);
+    if (isValidIranian11DigitNumber(formatted)) {
+      return formatted;
+    }
+  } else if (cleanedDigits.startsWith("0098") && cleanedDigits.length === 14) {
+    const formatted = "0" + cleanedDigits.slice(4);
+    if (isValidIranian11DigitNumber(formatted)) {
+      return formatted;
+    }
+  } else if (cleanedDigits.startsWith("0") && cleanedDigits.length === 11) {
+    if (isValidIranian11DigitNumber(cleanedDigits)) {
+      return cleanedDigits;
+    }
+  } else if (cleanedDigits.startsWith("9") && cleanedDigits.length === 10) {
+    const formatted = "0" + cleanedDigits;
+    if (isValidIranian11DigitNumber(formatted)) {
+      return formatted;
+    }
+  }
+  return "\u062B\u0628\u062A \u0646\u0634\u062F\u0647";
+}
+function parseListingFileName(fileName) {
+  if (!fileName) {
+    return {
+      phoneNumber: "\u062B\u0628\u062A \u0646\u0634\u062F\u0647",
+      rawPhonePrefix: "",
+      randomCode: "",
+      caption: "",
+      captionWithCode: "",
+      isTextFile: false
+    };
+  }
+  const trimmed = fileName.toString().trim();
+  if (!trimmed || trimmed === "\u0648\u0631\u0648\u062F\u06CC \u062F\u0633\u062A\u06CC") {
+    return {
+      phoneNumber: "\u062B\u0628\u062A \u0646\u0634\u062F\u0647",
+      rawPhonePrefix: "",
+      randomCode: "",
+      caption: "",
+      captionWithCode: "",
+      isTextFile: false
+    };
+  }
+  const baseName = trimmed.split("/").pop() || trimmed;
+  const isTextFile = /\.txt$/i.test(baseName);
+  const withoutExt = baseName.replace(/\.[a-zA-Z0-9]{2,5}$/i, "");
+  const parts = withoutExt.split("_");
+  const firstSegment = parts[0] ? parts[0].trim() : "";
+  const normalizedFirst = normalizePersianText(firstSegment).replace(/\s+/g, "");
+  let phoneFromStart = "\u062B\u0628\u062A \u0646\u0634\u062F\u0647";
+  if (normalizedFirst && /^[\+\d]{8,15}$/.test(normalizedFirst)) {
+    phoneFromStart = normalizeSinglePhoneCandidate(normalizedFirst);
+    if (phoneFromStart === "\u062B\u0628\u062A \u0646\u0634\u062F\u0647") {
+      const digitsOnly = normalizedFirst.replace(/[^\d]/g, "");
+      if (digitsOnly.length >= 10 && digitsOnly.length <= 14 && !/0000000/.test(digitsOnly)) {
+        phoneFromStart = digitsOnly.startsWith("98") && digitsOnly.length === 12 ? "0" + digitsOnly.slice(2) : digitsOnly;
+      }
+    }
+  }
+  if (phoneFromStart !== "\u062B\u0628\u062A \u0646\u0634\u062F\u0647") {
+    let randomCode2 = "";
+    let captionSegments = [];
+    if (parts.length >= 2) {
+      const secondSegmentNorm = normalizePersianText(parts[1].trim());
+      if (/^\d{1,8}$/.test(secondSegmentNorm)) {
+        randomCode2 = secondSegmentNorm;
+        captionSegments = parts.slice(2);
+      } else {
+        captionSegments = parts.slice(1);
+      }
+    }
+    const caption2 = captionSegments.join(" ").replace(/_/g, " ").replace(/\s+/g, " ").trim();
+    const captionWithCode2 = caption2 ? randomCode2 ? `${caption2} (\u06A9\u062F: ${randomCode2})` : caption2 : randomCode2 ? `\u06A9\u062F \u0622\u06AF\u0647\u06CC: ${randomCode2}` : "";
+    return {
+      phoneNumber: phoneFromStart,
+      rawPhonePrefix: firstSegment,
+      randomCode: randomCode2,
+      caption: caption2,
+      captionWithCode: captionWithCode2,
+      isTextFile
+    };
+  }
+  const fallbackPhone = normalizeSinglePhoneCandidate(withoutExt);
+  const rest = withoutExt.replace(/^(?:\+?98|0098|0)?9\d{9}_?/g, "").replace(/^\d{10,14}_?/g, "");
+  let randomCode = "";
+  const subParts = rest.split("_").filter(Boolean);
+  if (subParts.length >= 1 && /^\d{1,8}$/.test(normalizePersianText(subParts[0]))) {
+    randomCode = normalizePersianText(subParts[0]);
+    subParts.shift();
+  }
+  const caption = subParts.join(" ").replace(/\s+/g, " ").trim();
+  const captionWithCode = caption ? randomCode ? `${caption} (\u06A9\u062F: ${randomCode})` : caption : randomCode ? `\u06A9\u062F \u0622\u06AF\u0647\u06CC: ${randomCode}` : "";
+  return {
+    phoneNumber: fallbackPhone,
+    rawPhonePrefix: "",
+    randomCode,
+    caption,
+    captionWithCode,
+    isTextFile
+  };
+}
+function extractIranianPhone(...candidates) {
+  for (const raw of candidates) {
+    if (raw === void 0 || raw === null) continue;
+    const rawStr = raw.toString().trim();
+    if (!rawStr) continue;
+    if (rawStr.includes("_") || /\.(jpg|jpeg|png|webp|txt)$/i.test(rawStr)) {
+      const parsed = parseListingFileName(rawStr);
+      if (parsed.phoneNumber !== "\u062B\u0628\u062A \u0646\u0634\u062F\u0647") {
+        return parsed.phoneNumber;
+      }
+    }
+  }
+  for (const raw of candidates) {
+    if (raw === void 0 || raw === null) continue;
+    const rawStr = raw.toString().trim();
+    if (!rawStr) continue;
+    const res = normalizeSinglePhoneCandidate(rawStr);
+    if (res !== "\u062B\u0628\u062A \u0646\u0634\u062F\u0647") {
+      return res;
+    }
+  }
+  return "\u062B\u0628\u062A \u0646\u0634\u062F\u0647";
+}
+function isValidIranian11DigitNumber(num) {
+  if (num.length !== 11 || !num.startsWith("0")) return false;
+  if (num === "09120000000" || num === "09000000000" || num === "00000000000" || /^0(\d)\1{9}$/.test(num) || /0000000/.test(num)) {
+    return false;
+  }
+  return true;
+}
+function parseCarYear(rawYear) {
+  if (rawYear === void 0 || rawYear === null) return 0;
+  const normalized = normalizePersianText(rawYear.toString()).trim();
+  if (!normalized) return 0;
+  const digitsOnly = normalized.replace(/[^\d]/g, "");
+  if (!digitsOnly || digitsOnly === "0") return 0;
+  if (digitsOnly === "00") return 1400;
+  const num = parseInt(digitsOnly, 10);
+  if (isNaN(num) || num <= 0) return 0;
+  if (num >= 70 && num <= 99) {
+    return 1300 + num;
+  }
+  if (num >= 1 && num <= 15) {
+    return 1400 + num;
+  }
+  if (num >= 400 && num <= 415) {
+    return 1e3 + num;
+  }
+  if (num >= 1350 && num <= 1420 || num >= 1980 && num <= 2035) {
+    return num;
+  }
+  return 0;
+}
+function extractCarAttributes(text, rawColor = "") {
+  const parsedFile = parseListingFileName(text);
+  const fileCaption = parsedFile.caption || "";
+  const combined = `${fileCaption} ${rawColor}`.replace(/_/g, " ").trim();
+  let color = "\u0633\u0641\u06CC\u062F";
+  let colorHex = "#f8fafc";
+  if (/مشکی|سیاه/.test(combined)) {
+    color = "\u0645\u0634\u06A9\u06CC";
+    colorHex = "#0f172a";
+  } else if (/خاکستری|نوک‌مدادی|دلفینی|سربی/.test(combined)) {
+    color = "\u062E\u0627\u06A9\u0633\u062A\u0631\u06CC";
+    colorHex = "#64748b";
+  } else if (/نقره‌ای|سیلور/.test(combined)) {
+    color = "\u0646\u0642\u0631\u0647\u200C\u0627\u06CC";
+    colorHex = "#cbd5e1";
+  } else if (/قرمز|شرابی|عنابی/.test(combined)) {
+    color = "\u0642\u0631\u0645\u0632";
+    colorHex = "#dc2626";
+  } else if (/آبی|کاربنی|سرمه‌ای|سرمه ای/.test(combined)) {
+    color = "\u0622\u0628\u06CC";
+    colorHex = "#1d4ed8";
+  } else if (/سفید/.test(combined)) {
+    color = "\u0633\u0641\u06CC\u062F";
+    colorHex = "#f8fafc";
+  }
+  const gearbox = /اتومات|پانا|cvt|auto/i.test(combined) ? "\u0627\u062A\u0648\u0645\u0627\u062A\u06CC\u06A9" : "\u062F\u0646\u062F\u0647\u200C\u0627\u06CC";
+  let bodyCondition = "\u0628\u062F\u0646\u0647 \u062A\u0645\u06CC\u0632 \u0648 \u0645\u0631\u062A\u0628";
+  if (/بیرنگ|بی رنگ|بدون رنگ|بدونه رنگ|خشک|صفر/.test(combined)) {
+    bodyCondition = "\u0628\u062F\u0648\u0646 \u0631\u0646\u06AF \u0648 \u0634\u0627\u0633\u06CC\u200C\u0647\u0627 \u0633\u0627\u0644\u0645";
+  } else if (/یه لکه|یک لکه|یه گلگیر|یک گلگیر/.test(combined)) {
+    bodyCondition = "\u06CC\u06A9 \u0644\u06A9\u0647 \u0631\u0646\u06AF";
+  } else if (/چند لکه|چن لکه|سه لکه|۳لکه|3لکه/.test(combined)) {
+    bodyCondition = "\u0686\u0646\u062F \u0644\u06A9\u0647 \u0631\u0646\u06AF \u062C\u0632\u0626\u06CC\u060C \u0641\u0646\u06CC \u0633\u0627\u0644\u0645";
+  }
+  let cleanNote = "";
+  const cleanedRawColor = rawColor.replace(/\.jpg|\.txt|\.png/gi, "").replace(/(?:\+?98|0098|0)?9\d{9}/g, "").trim();
+  if (parsedFile.caption) {
+    cleanNote = parsedFile.captionWithCode;
+    if (cleanedRawColor && cleanedRawColor.length > 3 && !normalizePersianText(parsedFile.caption).includes(normalizePersianText(cleanedRawColor))) {
+      cleanNote = `${cleanNote} | ${cleanedRawColor}`;
+    }
+  } else if (cleanedRawColor) {
+    cleanNote = parsedFile.randomCode ? `${cleanedRawColor} (\u06A9\u062F: ${parsedFile.randomCode})` : cleanedRawColor;
+  } else if (parsedFile.randomCode) {
+    cleanNote = `\u06A9\u062F \u0622\u06AF\u0647\u06CC: ${parsedFile.randomCode}`;
+  }
+  return {
+    color,
+    colorHex,
+    gearbox,
+    bodyCondition,
+    notes: cleanNote || "\u0628\u062F\u0648\u0646 \u062A\u0648\u0636\u06CC\u062D\u0627\u062A \u062A\u06A9\u0645\u06CC\u0644\u06CC"
+  };
+}
+function detectBrand(carName) {
+  const norm = normalizePersianText(carName);
+  if (/206|207|2008|پژو|پارس|پرشیا|405|دنا|تارا|سمند|سورن|رانا|هایما|آریسان|ریرا|ال 90|ال90|تندر/.test(norm)) {
+    return "\u0627\u06CC\u0631\u0627\u0646 \u062E\u0648\u062F\u0631\u0648";
+  }
+  if (/پراید|تیبا|کوییک|ساینا|شاهین|آریا|زامیاد/.test(norm)) {
+    return "\u0633\u0627\u06CC\u067E\u0627";
+  }
+  if (/نیسان|ماکسیما|جوک|ترا|قشقایی|رونیز/.test(norm)) {
+    return "\u0646\u06CC\u0633\u0627\u0646";
+  }
+  if (/تویوتا|کمری|کرولا|پرادو|لندکروز|راوفور|ایرتویا|لوین|یاریس|هایلوکس/.test(norm)) {
+    return "\u062A\u0648\u06CC\u0648\u062A\u0627";
+  }
+  if (/هیوندای|سانتافه|سوناتا|الانترا|النترا|توسان|پالیسید|آزرا|اکسنت|وراکروز|کنا/.test(norm)) {
+    return "\u0647\u06CC\u0648\u0646\u062F\u0627\u06CC";
+  }
+  if (/کیا|اسپورتیج|سراتو|اپتیما|سورنتو|موهاوی|پیکانتو|کادنزا/.test(norm)) {
+    return "\u06A9\u06CC\u0627";
+  }
+  if (/سیتروئن|زانتیا/.test(norm)) {
+    return "\u0633\u06CC\u062A\u0631\u0648\u0626\u0646";
+  }
+  if (/دانگفنگ|دانگ فنگ|اچسی|اچ سی|h30/.test(norm)) {
+    return "\u062F\u0627\u0646\u06AF\u200C\u0641\u0646\u06AF";
+  }
+  if (/امویام|ام وی ام|تیگو|آریزو|فونیکس|چری|اکستروم/.test(norm)) {
+    return "\u0645\u062F\u06CC\u0631\u0627\u0646 \u062E\u0648\u062F\u0631\u0648";
+  }
+  if (/بنز|مرسدس/.test(norm)) {
+    return "\u0645\u0631\u0633\u062F\u0633 \u0628\u0646\u0632";
+  }
+  if (/لکسوس/.test(norm)) {
+    return "\u0644\u06A9\u0633\u0648\u0633";
+  }
+  if (/آئودی|audi/i.test(norm)) {
+    return "\u0622\u0626\u0648\u062F\u06CC";
+  }
+  if (/لاماری/.test(norm)) {
+    return "\u0622\u0631\u06CC\u0646 \u067E\u0627\u0631\u0633 \u0645\u0648\u062A\u0648\u0631";
+  }
+  return "\u0633\u0627\u06CC\u0631";
+}
+
+// src/utils/sessionDataParser.ts
+function extractCleanFileDescription(fileName, rawColor, customNote) {
+  const parsedFile = parseListingFileName(fileName);
+  const cleanNote = (customNote || "").trim().replace(/^بدون توضیحات تکمیلی$/, "").replace(/^ثبت شده توسط سامانه هوشمند فروشندگان$/, "").trim();
+  const isNoteJustCode = !cleanNote || cleanNote === parsedFile.randomCode || cleanNote === `\u06A9\u062F \u0622\u06AF\u0647\u06CC: ${parsedFile.randomCode}`;
+  if (parsedFile.caption) {
+    let base = parsedFile.captionWithCode;
+    if (!isNoteJustCode && !normalizePersianText(base).includes(normalizePersianText(cleanNote))) {
+      base = `${base} | ${cleanNote}`;
+    }
+    return base;
+  }
+  if (!isNoteJustCode) {
+    if (parsedFile.randomCode && !cleanNote.includes(parsedFile.randomCode)) {
+      return `${cleanNote} (\u06A9\u062F: ${parsedFile.randomCode})`;
+    }
+    return cleanNote;
+  }
+  if (rawColor && rawColor.trim().length > 3 && !/^(سفید|مشکی|قرمز|آبی|نقره‌ای|خاکستری|دلفینی)$/.test(rawColor.trim())) {
+    const cleanRawColor = rawColor.trim();
+    return parsedFile.randomCode ? `${cleanRawColor} (\u06A9\u062F: ${parsedFile.randomCode})` : cleanRawColor;
+  }
+  if (parsedFile.randomCode) {
+    const colorPart = rawColor?.trim() ? `${rawColor.trim()} - ` : "";
+    return `${colorPart}\u06A9\u062F \u0622\u06AF\u0647\u06CC: ${parsedFile.randomCode}`;
+  }
+  return rawColor?.trim() || "";
+}
+function parseNumericValue(val) {
+  if (val === void 0 || val === null || val === "") return 0;
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  const normalized = normalizePersianText(val.toString());
+  if (/توافقی|تماس|نامشخص/.test(normalized)) return 0;
+  let multiplier = 1;
+  if (/میلیارد/.test(normalized)) {
+    multiplier = 1e9;
+  } else if (/میلیون|تومان/.test(normalized) && !/\d{6,}/.test(normalized)) {
+    multiplier = 1e6;
+  }
+  const cleanedDigits = normalized.replace(/[^\d.]/g, "");
+  const parsed = parseFloat(cleanedDigits);
+  if (isNaN(parsed)) return 0;
+  return Math.round(parsed * (parsed < 1e3 && multiplier > 1 ? multiplier : 1));
+}
+function applyNormalizationRules(carName, rules) {
+  if (!rules || rules.length === 0 || !carName) return carName;
+  const normName = normalizePersianText(carName);
+  for (const rule of rules) {
+    if (rule.aliases && Array.isArray(rule.aliases)) {
+      for (const alias of rule.aliases) {
+        if (normName.includes(normalizePersianText(alias))) {
+          return rule.targetName;
+        }
+      }
+    }
+  }
+  return carName;
+}
+function createCarPlaceholder(colorHex, modelName, isFull) {
+  const width = isFull ? 800 : 160;
+  const height = isFull ? 480 : 160;
+  const strokeColor = "#1e293b";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
+    <defs>
+      <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#f8fafc"/>
+        <stop offset="100%" stop-color="#e2e8f0"/>
+      </linearGradient>
+    </defs>
+    <rect width="${width}" height="${height}" fill="url(#bg)"/>
+    <ellipse cx="${width * 0.5}" cy="${height * 0.76}" rx="${width * 0.42}" ry="${height * 0.08}" fill="#0f172a" fill-opacity="0.18" />
+    <path d="M ${width * 0.28} ${height * 0.52} C ${width * 0.34} ${height * 0.32}, ${width * 0.62} ${height * 0.3}, ${width * 0.72} ${height * 0.52} Z" fill="#334155" />
+    <path d="M ${width * 0.31} ${height * 0.5} C ${width * 0.36} ${height * 0.35}, ${width * 0.6} ${height * 0.34}, ${width * 0.69} ${height * 0.5} Z" fill="#93c5fd" opacity="0.85" />
+    <line x1="${width * 0.5}" y1="${height * 0.35}" x2="${width * 0.5}" y2="${height * 0.5}" stroke="#1e293b" stroke-width="${isFull ? 4 : 2}"/>
+    <path d="M ${width * 0.12} ${height * 0.62} C ${width * 0.12} ${height * 0.52}, ${width * 0.2} ${height * 0.5}, ${width * 0.28} ${height * 0.52} L ${width * 0.72} ${height * 0.52} C ${width * 0.8} ${height * 0.52}, ${width * 0.88} ${height * 0.55}, ${width * 0.88} ${height * 0.64} C ${width * 0.88} ${height * 0.7}, ${width * 0.82} ${height * 0.72}, ${width * 0.76} ${height * 0.72} L ${width * 0.24} ${height * 0.72} C ${width * 0.16} ${height * 0.72}, ${width * 0.12} ${height * 0.68}, ${width * 0.12} ${height * 0.62} Z" fill="${colorHex}" stroke="${strokeColor}" stroke-width="${isFull ? 3 : 1.5}" />
+    <circle cx="${width * 0.84}" cy="${height * 0.58}" r="${isFull ? 10 : 3}" fill="#fef08a" />
+    <circle cx="${width * 0.16}" cy="${height * 0.58}" r="${isFull ? 8 : 2.5}" fill="#ef4444" />
+    <circle cx="${width * 0.28}" cy="${height * 0.72}" r="${height * 0.12}" fill="#0f172a"/>
+    <circle cx="${width * 0.28}" cy="${height * 0.72}" r="${height * 0.07}" fill="#94a3b8"/>
+    <circle cx="${width * 0.72}" cy="${height * 0.72}" r="${height * 0.12}" fill="#0f172a"/>
+    <circle cx="${width * 0.72}" cy="${height * 0.72}" r="${height * 0.07}" fill="#94a3b8"/>
+    <rect x="${width * 0.42}" y="${height * (isFull ? 0.9 : 0.88)}" width="${width * 0.16}" height="${isFull ? 4 : 2}" rx="${isFull ? 2 : 1}" fill="#94a3b8" />
+  </svg>`;
+  if (typeof btoa === "function") {
+    return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svg)));
+  }
+  return "data:image/svg+xml;base64," + Buffer.from(svg).toString("base64");
+}
+function extractFallbackCarTitleFromText(text) {
+  if (!text) return "";
+  const lines = text.split(/\r?\n/).map((l) => l.replace(/❌/g, "").trim()).filter((l) => l.length > 1 && !/^(درخواست خرید|فروشی|آگهی)$/i.test(l) && !/^\d{10,13}$/.test(l));
+  if (lines.length === 0) return "";
+  return lines[0].slice(0, 60).trim();
+}
+function isBuyerRecord(item, attachedText) {
+  if (!item || typeof item !== "object") return false;
+  if (item.type === "buy_request" || item.type === "buyer" || item.type === "buy" || item.type === "order" || item.type === "request" || item.\u0646\u0648\u0639 === "\u062E\u0631\u06CC\u062F" || item.\u0646\u0648\u0639 === "\u062F\u0631\u062E\u0648\u0627\u0633\u062A" || item.\u0646\u0648\u0639 === "\u0633\u0641\u0627\u0631\u0634" || item.isBuyer === true || item.is_buyer === true) {
+    return true;
+  }
+  if (item.\u0627\u0633\u0645_\u0645\u0634\u062A\u0631\u06CC || item.\u0645\u0634\u062A\u0631\u06CC || item.\u062E\u0631\u06CC\u062F\u0627\u0631 || item.\u0627\u0633\u0645_\u062E\u0631\u06CC\u062F\u0627\u0631 || item.\u0646\u0627\u0645_\u062E\u0631\u06CC\u062F\u0627\u0631 || item.\u0646\u0627\u0645_\u0645\u0634\u062A\u0631\u06CC || item.\u0645\u062A\u0642\u0627\u0636\u06CC || item.\u0646\u0627\u0645_\u0645\u062A\u0642\u0627\u0636\u06CC || item.customer || item.buyer) {
+    return true;
+  }
+  if (item.\u0628\u0648\u062F\u062C\u0647_\u062A\u0642\u0631\u06CC\u0628\u06CC_\u062A\u0648\u0645\u0627\u0646 || item.\u0628\u0648\u062F\u062C\u0647 || item.\u0628\u0648\u062F\u062C\u0647_\u062A\u0648\u0645\u0627\u0646 || item.\u0645\u0628\u0644\u063A_\u062F\u0631\u062E\u0648\u0627\u0633\u062A\u06CC || item.\u0633\u0642\u0641_\u0628\u0648\u062F\u062C\u0647 || item.\u0633\u0642\u0641_\u0642\u06CC\u0645\u062A || item.budget) {
+    return true;
+  }
+  const combinedText = [
+    item.title,
+    item.model,
+    item.\u0627\u0633\u0645_\u0645\u0627\u0634\u06CC\u0646,
+    item.\u0645\u0627\u0634\u06CC\u0646,
+    item.\u062E\u0648\u062F\u0631\u0648,
+    item.\u0645\u062A\u0646,
+    item.caption,
+    item.\u062F\u0631\u062E\u0648\u0627\u0633\u062A,
+    item.\u0633\u0641\u0627\u0631\u0634,
+    item.\u06CC\u0627\u062F\u062F\u0627\u0634\u062A,
+    item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A,
+    item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A_\u0628\u06CC\u0634\u062A\u0631,
+    item.description,
+    item.\u0631\u0646\u06AF,
+    item.imageFileName,
+    item.fileName,
+    attachedText
+  ].filter(Boolean).join(" ");
+  const cleanForBuyerCheck = combinedText.replace(
+    /سفارش\s+(عربستان|خلیج|امریکا|آمریکا|کویت|عمان|دبی|المان|آلمان|اروپا|کانادا|چین|کره|ژاپن|فول)/gi,
+    ""
+  );
+  if (/(^|[\s_،؛.])(خریدار|خریداریم|متقاضی|درخواست خرید|سفارش خرید|نیازمند|میخوام|می‌خوام|buyer|order|request)([\s_،؛.]|$|‌)/i.test(
+    cleanForBuyerCheck
+  )) {
+    return true;
+  }
+  return false;
+}
+function extractBuyersArray(data) {
+  if (!data) return [];
+  if (Array.isArray(data)) {
+    return data.filter((item) => isBuyerRecord(item));
+  }
+  if (typeof data !== "object") return [];
+  const result = [];
+  const seenItems = /* @__PURE__ */ new Set();
+  const seenIds = /* @__PURE__ */ new Set();
+  const checkAndAdd = (arr) => {
+    if (!Array.isArray(arr)) return;
+    for (let i = 0; i < arr.length; i++) {
+      const item = arr[i];
+      if (!item || typeof item !== "object") continue;
+      if (seenItems.has(item)) continue;
+      const idKey = item.id ? String(item.id).trim() : null;
+      if (idKey && seenIds.has(idKey)) continue;
+      if (idKey) seenIds.add(idKey);
+      seenItems.add(item);
+      result.push(item);
+    }
+  };
+  const candidateArrays = [
+    data.buyers,
+    data.\u062E\u0631\u06CC\u062F\u0627\u0631\u0627\u0646,
+    data.\u062E\u0631\u06CC\u062F\u0627\u0631,
+    data.\u0645\u0634\u062A\u0631\u06CC\u0627\u0646,
+    data.\u0645\u0634\u062A\u0631\u06CC,
+    data.\u0633\u0641\u0627\u0631\u0634\u0627\u062A,
+    data.\u0633\u0641\u0627\u0631\u0634,
+    data.\u062F\u0631\u062E\u0648\u0627\u0633\u062A\u200C\u0647\u0627,
+    data.\u062F\u0631\u062E\u0648\u0627\u0633\u062A_\u0647\u0627,
+    data.\u062F\u0631\u062E\u0648\u0627\u0633\u062A\u0647\u0627,
+    data.\u062F\u0631\u062E\u0648\u0627\u0633\u062A,
+    data.orders,
+    data.order,
+    data.requests,
+    data.request,
+    data.leads,
+    data.inquiries,
+    data.customers,
+    data.buy_requests,
+    data.buyRequests,
+    data.buy,
+    data.\u062E\u0631\u06CC\u062F,
+    data.\u062A\u0642\u0627\u0636\u0627,
+    data.\u0627\u0633\u062A\u0639\u0644\u0627\u0645\u0627\u062A,
+    data.\u0627\u0633\u062A\u0639\u0644\u0627\u0645,
+    data.buyerList,
+    data.buyers_list
+  ];
+  for (const arr of candidateArrays) {
+    if (Array.isArray(arr)) {
+      checkAndAdd(arr);
+    }
+  }
+  for (const key of Object.keys(data)) {
+    if (key === "sellers" || key === "normalizationRules" || key === "dominantKeywords" || key === "referenceCarNames") {
+      continue;
+    }
+    const val = data[key];
+    if (Array.isArray(val) && val.length > 0) {
+      const buyersInArray = val.filter((item) => isBuyerRecord(item));
+      checkAndAdd(buyersInArray);
+    }
+  }
+  return result;
+}
+function extractSellersArray(data) {
+  if (!data) return [];
+  if (Array.isArray(data)) {
+    return data.filter((item) => !isBuyerRecord(item));
+  }
+  if (typeof data !== "object") return [];
+  const result = [];
+  const seenItems = /* @__PURE__ */ new Set();
+  const seenIds = /* @__PURE__ */ new Set();
+  const checkAndAdd = (arr) => {
+    if (!Array.isArray(arr)) return;
+    for (let i = 0; i < arr.length; i++) {
+      const item = arr[i];
+      if (!item || typeof item !== "object") continue;
+      if (isBuyerRecord(item)) continue;
+      if (seenItems.has(item)) continue;
+      const idKey = item.id ? String(item.id).trim() : null;
+      if (idKey && seenIds.has(idKey)) continue;
+      if (idKey) seenIds.add(idKey);
+      seenItems.add(item);
+      result.push(item);
+    }
+  };
+  const candidateArrays = [
+    data.sellers,
+    data.\u0641\u0631\u0648\u0634\u0646\u062F\u06AF\u0627\u0646,
+    data.\u0641\u0631\u0648\u0634\u0646\u062F\u0647,
+    data.\u0641\u0631\u0648\u0634,
+    data.\u0622\u06AF\u0647\u06CC\u200C\u0647\u0627,
+    data.\u0622\u06AF\u0647\u06CC_\u0647\u0627,
+    data.\u0622\u06AF\u0647\u06CC\u0647\u0627,
+    data.ads,
+    data.listings,
+    data.cars,
+    data.seller,
+    data.sellers_list,
+    data.sellerList,
+    data.data,
+    data.items,
+    data.records,
+    data.list,
+    data.unprocessed,
+    data.pending,
+    data.others,
+    data.auto,
+    data.vehicles
+  ];
+  for (const arr of candidateArrays) {
+    if (Array.isArray(arr)) {
+      checkAndAdd(arr);
+    }
+  }
+  for (const key of Object.keys(data)) {
+    if (key === "buyers" || key === "normalizationRules" || key === "dominantKeywords" || key === "referenceCarNames") {
+      continue;
+    }
+    const val = data[key];
+    if (Array.isArray(val) && val.length > 0) {
+      checkAndAdd(val);
+    }
+  }
+  return result;
+}
+function parseSessionJson(sessionData, imageMap = /* @__PURE__ */ new Map(), textMap = /* @__PURE__ */ new Map(), batchName = "\u0641\u0627\u06CC\u0644 \u0632\u06CC\u067E") {
+  const listings = [];
+  let sellersCount = 0;
+  let buyersCount = 0;
+  let errorsCount = 0;
+  const now = Date.now();
+  const currentDateFa = (/* @__PURE__ */ new Date()).toLocaleDateString("fa-IR");
+  const usedIds = /* @__PURE__ */ new Set();
+  const rules = sessionData.normalizationRules || [];
+  const rawSellers = extractSellersArray(sessionData);
+  const rawBuyers = extractBuyersArray(sessionData);
+  if (Array.isArray(rawSellers)) {
+    for (let i = 0; i < rawSellers.length; i++) {
+      const item = rawSellers[i];
+      if (!item) continue;
+      const originalId = (item.id || `seller-${i}`).toString().trim();
+      const rawFileName = (item.imageFileName || item.fileName || item.\u0646\u0627\u0645_\u0641\u0627\u06CC\u0644 || "").toString().trim();
+      const parsedFile = parseListingFileName(rawFileName);
+      const fileNoExt = rawFileName.replace(/\.[^/.]+$/, "");
+      const baseRawFileName = rawFileName.split("/").pop() || rawFileName;
+      const baseFileNoExt = baseRawFileName.replace(/\.[^/.]+$/, "");
+      const attachedText = (textMap.get(originalId) || textMap.get(rawFileName) || textMap.get(baseRawFileName) || (fileNoExt ? textMap.get(fileNoExt) : "") || (baseFileNoExt ? textMap.get(baseFileNoExt) : "") || "").trim();
+      const explicitCarName = (item.\u0627\u0633\u0645_\u0645\u0627\u0634\u06CC\u0646 || item.\u0645\u0627\u0634\u06CC\u0646 || item.\u062E\u0648\u062F\u0631\u0648 || item.\u0645\u062F\u0644 || item.\u0646\u0627\u0645_\u0645\u0627\u0634\u06CC\u0646 || item.\u0639\u0646\u0648\u0627\u0646 || item.title || item.carName || item.model || item.name || item.\u0645\u062A\u0646 || item.\u067E\u06CC\u0627\u0645 || item.\u0634\u0631\u062D || item.\u062F\u0631\u062E\u0648\u0627\u0633\u062A || item.\u0633\u0641\u0627\u0631\u0634 || item.\u0645\u0648\u0631\u062F_\u062F\u0631\u062E\u0648\u0627\u0633\u062A\u06CC || "").toString().trim();
+      let rawCarName = explicitCarName || extractFallbackCarTitleFromText(attachedText) || parsedFile.caption || "";
+      if (!rawCarName && item.\u0631\u0646\u06AF) {
+        rawCarName = item.\u0631\u0646\u06AF.replace(/_/g, " ").trim();
+      }
+      if (!rawCarName && (item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A || item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A_\u0628\u06CC\u0634\u062A\u0631 || item.description)) {
+        rawCarName = extractFallbackCarTitleFromText(item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A || item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A_\u0628\u06CC\u0634\u062A\u0631 || item.description);
+      }
+      if (!rawCarName && rawFileName) {
+        const cleanName = rawFileName.replace(/\.[^/.]+$/, "").replace(/^\d+_\d+_?/, "").replace(/_/g, " ").trim();
+        if (cleanName && cleanName.length > 2) {
+          rawCarName = cleanName;
+        }
+      }
+      const isActuallyBuyer = item.type === "buy_request" || item.type === "buyer";
+      const hasDisplayableContent = Boolean(rawCarName || rawFileName || attachedText);
+      if (!hasDisplayableContent) {
+        errorsCount++;
+        continue;
+      }
+      let id = originalId;
+      let dupCounter = 1;
+      while (usedIds.has(id)) {
+        id = `${originalId}-${item.rowIndex || i + 1}-${dupCounter}`;
+        dupCounter++;
+      }
+      usedIds.add(id);
+      const defaultFallbackName = isActuallyBuyer ? "\u062E\u0648\u062F\u0631\u0648 \u062F\u0631\u062E\u0648\u0627\u0633\u062A\u06CC" : parsedFile.randomCode ? `\u0622\u06AF\u0647\u06CC \u06A9\u062F ${toPersianDigits(parsedFile.randomCode)}` : "\u062E\u0648\u062F\u0631\u0648 \u0641\u0631\u0648\u0634\u06CC";
+      const standardCarName = applyNormalizationRules(rawCarName || defaultFallbackName, rules);
+      const year = parseCarYear(item.\u0633\u0627\u0644_\u0633\u0627\u062E\u062A || item.\u0633\u0627\u0644 || item.year);
+      const brand = detectBrand(`${standardCarName} ${attachedText} ${parsedFile.caption}`);
+      const contactPhone = parsedFile.phoneNumber !== "\u062B\u0628\u062A \u0646\u0634\u062F\u0647" ? parsedFile.phoneNumber : extractIranianPhone(
+        rawFileName,
+        item.\u0627\u0633\u0645_\u0641\u0631\u0648\u0634\u0646\u062F\u0647,
+        item.\u0641\u0631\u0648\u0634\u0646\u062F\u0647,
+        item.\u0627\u0633\u0645_\u0645\u0634\u062A\u0631\u06CC,
+        item.\u0645\u0634\u062A\u0631\u06CC,
+        item.\u062E\u0631\u06CC\u062F\u0627\u0631,
+        item.\u0646\u0627\u0645_\u0645\u0634\u062A\u0631\u06CC,
+        item.\u0646\u0627\u0645_\u062E\u0631\u06CC\u062F\u0627\u0631,
+        item.\u0634\u0645\u0627\u0631\u0647_\u062A\u0645\u0627\u0633,
+        item.\u062A\u0644\u0641\u0646,
+        item.\u0634\u0645\u0627\u0631\u0647,
+        item.\u062A\u0645\u0627\u0633,
+        item.\u0645\u0648\u0628\u0627\u06CC\u0644,
+        item.\u0634\u0645\u0627\u0631\u0647_\u0645\u0648\u0628\u0627\u06CC\u0644,
+        item.\u062A\u0644\u0641\u0646_\u062A\u0645\u0627\u0633,
+        item.phone,
+        item.mobile,
+        attachedText,
+        item.\u0645\u062A\u0646,
+        item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A,
+        item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A_\u0628\u06CC\u0634\u062A\u0631
+      );
+      const attrs = extractCarAttributes(rawFileName, `${item.\u0631\u0646\u06AF || ""} ${attachedText}`);
+      const rawPrice = parseNumericValue(
+        item.\u0642\u06CC\u0645\u062A_\u062A\u0648\u0645\u0627\u0646 || item.\u0642\u06CC\u0645\u062A || item.\u0645\u0628\u0644\u063A || item.\u0628\u0648\u062F\u062C\u0647_\u062A\u0642\u0631\u06CC\u0628\u06CC_\u062A\u0648\u0645\u0627\u0646 || item.\u0628\u0648\u062F\u062C\u0647 || item.budget || item.price
+      );
+      const priceFormatted = rawPrice > 0 ? formatTomanPrice(rawPrice) : isActuallyBuyer ? "\u0628\u0648\u062F\u062C\u0647 \u062A\u0648\u0627\u0641\u0642\u06CC" : "\u062A\u0648\u0627\u0641\u0642\u06CC";
+      let mileage = isActuallyBuyer ? 0 : parseNumericValue(item.\u06A9\u0627\u0631\u06A9\u0631\u062F_\u06A9\u06CC\u0644\u0648\u0645\u062A\u0631 || item.\u06A9\u0627\u0631\u06A9\u0631\u062F || item.\u06A9\u06CC\u0644\u0648\u0645\u062A\u0631 || item.mileage);
+      if (!isActuallyBuyer && mileage === 0) {
+        const combinedForMileage = normalizePersianText(`${parsedFile.caption} ${item.\u0631\u0646\u06AF || ""} ${attachedText}`);
+        const mileageMatch = combinedForMileage.match(/(\d+)\s*تا\s*کار/);
+        if (mileageMatch) {
+          mileage = parseInt(mileageMatch[1], 10) * 1e3;
+        }
+      }
+      const mileageFormatted = isActuallyBuyer ? "\u0645\u0647\u0645 \u0646\u06CC\u0633\u062A" : mileage > 0 ? `${toPersianDigits(mileage.toLocaleString("en-US"))} \u06A9\u06CC\u0644\u0648\u0645\u062A\u0631` : "\u06A9\u0627\u0631\u0634\u0646\u0627\u0633\u06CC \u0646\u0634\u062F\u0647";
+      let title = "";
+      if (isActuallyBuyer) {
+        const baseBuyerTitle = standardCarName.startsWith("\u062E\u0631\u06CC\u062F\u0627\u0631") ? standardCarName : `\u062E\u0631\u06CC\u062F\u0627\u0631 ${standardCarName}`;
+        title = year > 0 ? `${baseBuyerTitle} - \u0645\u062F\u0644 ${toPersianDigits(year)}` : baseBuyerTitle;
+      } else {
+        title = year > 0 ? `${standardCarName} - \u0645\u062F\u0644 ${toPersianDigits(year)}` : standardCarName;
+      }
+      const isTextOnly = Boolean(
+        attachedText || parsedFile.isTextFile || rawFileName === "\u0648\u0631\u0648\u062F\u06CC \u062F\u0633\u062A\u06CC" || rawFileName.endsWith(".txt")
+      );
+      let fileDescription = "";
+      if (attachedText) {
+        fileDescription = parsedFile.randomCode ? `${attachedText} (\u06A9\u062F: ${parsedFile.randomCode})` : attachedText;
+      } else {
+        fileDescription = extractCleanFileDescription(
+          rawFileName,
+          item.\u0631\u0646\u06AF,
+          item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A || item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A_\u0628\u06CC\u0634\u062A\u0631 || attrs.notes
+        );
+      }
+      let imageSrc = imageMap.get(originalId) || imageMap.get(rawFileName) || imageMap.get(baseRawFileName) || (fileNoExt ? imageMap.get(fileNoExt) : void 0) || (baseFileNoExt ? imageMap.get(baseFileNoExt) : void 0);
+      if (!imageSrc) {
+        imageSrc = createCarPlaceholder(isActuallyBuyer ? "#059669" : attrs.colorHex, standardCarName, false);
+      }
+      const description = fileDescription;
+      const listing = {
+        id,
+        rowIndex: item.rowIndex,
+        imageFileName: rawFileName,
+        mediaId: (item.mediaId || baseRawFileName || rawFileName || "").toString().trim() || void 0,
+        revision: typeof item.revision === "number" ? item.revision : 1,
+        status: item.status || "success",
+        type: isActuallyBuyer ? "buy_request" : "sale",
+        title,
+        brand,
+        model: standardCarName,
+        year,
+        hasExplicitYear: year > 0,
+        price: rawPrice,
+        priceFormatted,
+        mileage,
+        mileageFormatted,
+        color: attrs.color || (isActuallyBuyer ? "\u0631\u0646\u06AF \u062F\u0644\u062E\u0648\u0627\u0647" : "\u0633\u0641\u06CC\u062F"),
+        gearbox: attrs.gearbox || (isActuallyBuyer ? "\u0627\u062A\u0648\u0645\u0627\u062A\u06CC\u06A9" : "\u062F\u0646\u062F\u0647\u200C\u0627\u06CC"),
+        bodyCondition: attrs.bodyCondition || (isActuallyBuyer ? "\u0633\u0627\u0644\u0645 \u0648 \u0628\u06CC\u200C\u0631\u0646\u06AF" : "\u0633\u0627\u0644\u0645"),
+        fuelType: "\u0628\u0646\u0632\u06CC\u0646",
+        city: "\u062A\u0647\u0631\u0627\u0646",
+        phoneNumber: contactPhone,
+        description,
+        fileDescription,
+        isTextOnly,
+        importBatchName: batchName,
+        importDate: currentDateFa,
+        createdAt: new Date(now - i % 4 * 36e5 * 8).toISOString(),
+        imageThumbnailBase64: imageSrc,
+        imageFullBase64: imageSrc
+      };
+      listing._searchIndex = buildSearchIndex(listing);
+      listings.push(listing);
+      if (isActuallyBuyer) {
+        buyersCount++;
+      } else {
+        sellersCount++;
+      }
+    }
+  }
+  if (Array.isArray(rawBuyers)) {
+    for (let i = 0; i < rawBuyers.length; i++) {
+      const item = rawBuyers[i];
+      if (!item) continue;
+      const originalId = (item.id || `buyer-${i}`).toString().trim();
+      const rawFileName = (item.imageFileName || item.fileName || item.\u0646\u0627\u0645_\u0641\u0627\u06CC\u0644 || "").toString().trim();
+      const parsedFile = parseListingFileName(rawFileName);
+      const fileNoExt = rawFileName.replace(/\.[^/.]+$/, "");
+      const baseRawFileName = rawFileName.split("/").pop() || rawFileName;
+      const baseFileNoExt = baseRawFileName.replace(/\.[^/.]+$/, "");
+      const attachedText = (textMap.get(originalId) || textMap.get(rawFileName) || textMap.get(baseRawFileName) || (fileNoExt ? textMap.get(fileNoExt) : "") || (baseFileNoExt ? textMap.get(baseFileNoExt) : "") || "").trim();
+      const explicitCarName = (item.\u0627\u0633\u0645_\u0645\u0627\u0634\u06CC\u0646 || item.\u0645\u0627\u0634\u06CC\u0646 || item.\u062E\u0648\u062F\u0631\u0648 || item.\u0645\u062F\u0644 || item.\u0646\u0627\u0645_\u0645\u0627\u0634\u06CC\u0646 || item.\u0639\u0646\u0648\u0627\u0646 || item.title || item.carName || item.model || item.name || item.\u0645\u062A\u0646 || item.\u067E\u06CC\u0627\u0645 || item.\u0634\u0631\u062D || item.\u062F\u0631\u062E\u0648\u0627\u0633\u062A || item.\u0633\u0641\u0627\u0631\u0634 || item.\u0645\u0648\u0631\u062F_\u062F\u0631\u062E\u0648\u0627\u0633\u062A\u06CC || item.\u06CC\u0627\u062F\u062F\u0627\u0634\u062A || item.caption || item.query || item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A_\u0628\u06CC\u0634\u062A\u0631 || item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A || item.description || "").toString().trim();
+      const rawCarName = explicitCarName || extractFallbackCarTitleFromText(attachedText) || parsedFile.caption || "";
+      const customerRaw = (item.\u0627\u0633\u0645_\u0645\u0634\u062A\u0631\u06CC || item.\u0645\u0634\u062A\u0631\u06CC || item.\u062E\u0631\u06CC\u062F\u0627\u0631 || item.\u0646\u0627\u0645_\u0645\u0634\u062A\u0631\u06CC || item.\u0646\u0627\u0645_\u062E\u0631\u06CC\u062F\u0627\u0631 || item.\u0645\u062A\u0642\u0627\u0636\u06CC || item.\u06A9\u0627\u0631\u0628\u0631 || item.\u0641\u0631\u0633\u062A\u0646\u062F\u0647 || item.\u0634\u0645\u0627\u0631\u0647_\u062A\u0645\u0627\u0633 || item.\u062A\u0644\u0641\u0646 || item.\u0634\u0645\u0627\u0631\u0647 || item.\u062A\u0645\u0627\u0633 || item.phone || item.mobile || "").toString().trim();
+      const hasAnyField = Boolean(
+        rawCarName || customerRaw || rawFileName || attachedText || item.id || item.\u0628\u0648\u062F\u062C\u0647 || item.\u0628\u0648\u062F\u062C\u0647_\u062A\u0642\u0631\u06CC\u0628\u06CC_\u062A\u0648\u0645\u0627\u0646 || item.price || item.budget || item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A_\u0628\u06CC\u0634\u062A\u0631 || item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A || item.description || item.errorMessage || item.\u0631\u0646\u06AF || item.\u0633\u0627\u0644_\u0633\u0627\u062E\u062A
+      );
+      if (!hasAnyField) {
+        errorsCount++;
+        continue;
+      }
+      let id = originalId;
+      let dupCounter = 1;
+      while (usedIds.has(id)) {
+        id = `${originalId}-${item.rowIndex || i + 1}-${dupCounter}`;
+        dupCounter++;
+      }
+      usedIds.add(id);
+      const standardCarName = applyNormalizationRules(rawCarName || "\u062E\u0648\u062F\u0631\u0648 \u062F\u0631\u062E\u0648\u0627\u0633\u062A\u06CC", rules);
+      const year = parseCarYear(item.\u0633\u0627\u0644_\u0633\u0627\u062E\u062A || item.\u0633\u0627\u0644 || item.year);
+      const brand = detectBrand(`${standardCarName} ${attachedText} ${parsedFile.caption}`);
+      const buyerPhone = parsedFile.phoneNumber !== "\u062B\u0628\u062A \u0646\u0634\u062F\u0647" ? parsedFile.phoneNumber : extractIranianPhone(
+        rawFileName,
+        item.\u0634\u0645\u0627\u0631\u0647_\u062A\u0645\u0627\u0633,
+        item.\u062A\u0644\u0641\u0646,
+        item.\u0634\u0645\u0627\u0631\u0647,
+        item.\u062A\u0645\u0627\u0633,
+        item.\u0645\u0648\u0628\u0627\u06CC\u0644,
+        item.\u0634\u0645\u0627\u0631\u0647_\u0645\u0648\u0628\u0627\u06CC\u0644,
+        item.\u062A\u0644\u0641\u0646_\u062A\u0645\u0627\u0633,
+        item.phone,
+        item.mobile,
+        customerRaw,
+        item.\u0627\u0633\u0645_\u0645\u0634\u062A\u0631\u06CC,
+        item.\u0645\u0634\u062A\u0631\u06CC,
+        item.\u062E\u0631\u06CC\u062F\u0627\u0631,
+        item.\u0646\u0627\u0645_\u0645\u0634\u062A\u0631\u06CC,
+        item.\u0646\u0627\u0645_\u062E\u0631\u06CC\u062F\u0627\u0631,
+        item.\u0645\u062A\u0646,
+        item.\u067E\u06CC\u0627\u0645,
+        item.\u0634\u0631\u062D,
+        item.\u062F\u0631\u062E\u0648\u0627\u0633\u062A,
+        item.\u0633\u0641\u0627\u0631\u0634,
+        attachedText,
+        item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A_\u0628\u06CC\u0634\u062A\u0631,
+        item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A,
+        item.description
+      );
+      const budget = parseNumericValue(
+        item.\u0628\u0648\u062F\u062C\u0647_\u062A\u0642\u0631\u06CC\u0628\u06CC_\u062A\u0648\u0645\u0627\u0646 || item.\u0628\u0648\u062F\u062C\u0647 || item.\u0628\u0648\u062F\u062C\u0647_\u062A\u0648\u0645\u0627\u0646 || item.\u0633\u0642\u0641_\u0642\u06CC\u0645\u062A || item.\u0633\u0642\u0641_\u0628\u0648\u062F\u062C\u0647 || item.\u0645\u0628\u0644\u063A || item.\u0642\u06CC\u0645\u062A || item.budget || item.price
+      );
+      const budgetFormatted = budget > 0 ? formatTomanPrice(budget) : "\u0628\u0648\u062F\u062C\u0647 \u062A\u0648\u0627\u0641\u0642\u06CC";
+      const baseBuyerTitle = standardCarName.startsWith("\u062E\u0631\u06CC\u062F\u0627\u0631") ? standardCarName : `\u062E\u0631\u06CC\u062F\u0627\u0631 ${standardCarName}`;
+      const title = year > 0 ? `${baseBuyerTitle} - \u0645\u062F\u0644 ${toPersianDigits(year)}` : baseBuyerTitle;
+      const hasAttachedImage = Boolean(
+        imageMap.has(originalId) || imageMap.has(rawFileName) || fileNoExt && imageMap.has(fileNoExt)
+      );
+      const hasImageExt = /\.(jpg|jpeg|png|webp|svg|gif)$/i.test(rawFileName);
+      const isTextOnly = Boolean(
+        attachedText || parsedFile.isTextFile || rawFileName === "\u0648\u0631\u0648\u062F\u06CC \u062F\u0633\u062A\u06CC" || !hasAttachedImage && !hasImageExt
+      );
+      let fileDescription = "";
+      if (attachedText) {
+        fileDescription = parsedFile.randomCode ? `${attachedText} (\u06A9\u062F: ${parsedFile.randomCode})` : attachedText;
+      } else {
+        fileDescription = extractCleanFileDescription(
+          rawFileName,
+          item.\u0631\u0646\u06AF,
+          item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A_\u0628\u06CC\u0634\u062A\u0631 || item.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A || item.description
+        );
+      }
+      let imageSrc = imageMap.get(originalId) || imageMap.get(rawFileName) || imageMap.get(baseRawFileName) || (fileNoExt ? imageMap.get(fileNoExt) : void 0) || (baseFileNoExt ? imageMap.get(baseFileNoExt) : void 0);
+      if (!imageSrc) {
+        imageSrc = createCarPlaceholder("#059669", standardCarName, false);
+      }
+      const description = [
+        fileDescription,
+        item.\u0631\u0646\u06AF && !fileDescription.includes(item.\u0631\u0646\u06AF) ? `\u0631\u0646\u06AF\u200C\u0647\u0627\u06CC \u0645\u062F\u0646\u0638\u0631: ${item.\u0631\u0646\u06AF}` : ""
+      ].filter(Boolean).join("\n");
+      const listing = {
+        id,
+        rowIndex: item.rowIndex,
+        imageFileName: rawFileName,
+        mediaId: (item.mediaId || baseRawFileName || rawFileName || "").toString().trim() || void 0,
+        revision: typeof item.revision === "number" ? item.revision : 1,
+        status: item.status || "success",
+        type: "buy_request",
+        title,
+        brand,
+        model: standardCarName,
+        year,
+        hasExplicitYear: year > 0,
+        price: budget,
+        priceFormatted: budgetFormatted,
+        mileage: 0,
+        mileageFormatted: "\u0645\u0647\u0645 \u0646\u06CC\u0633\u062A",
+        color: item.\u0631\u0646\u06AF || "\u0631\u0646\u06AF \u062F\u0644\u062E\u0648\u0627\u0647",
+        gearbox: "\u0627\u062A\u0648\u0645\u0627\u062A\u06CC\u06A9",
+        bodyCondition: "\u0633\u0627\u0644\u0645 \u0648 \u0628\u06CC\u200C\u0631\u0646\u06AF",
+        fuelType: "\u0628\u0646\u0632\u06CC\u0646",
+        city: "\u062A\u0647\u0631\u0627\u0646",
+        phoneNumber: buyerPhone,
+        description,
+        fileDescription,
+        isTextOnly,
+        importBatchName: batchName,
+        importDate: currentDateFa,
+        createdAt: new Date(now - i % 4 * 36e5 * 6).toISOString(),
+        imageThumbnailBase64: imageSrc,
+        imageFullBase64: imageSrc
+      };
+      listing._searchIndex = buildSearchIndex(listing);
+      listings.push(listing);
+      buyersCount++;
+    }
+  }
+  return { listings, sellersCount, buyersCount, errorsCount };
+}
+
+// server.ts
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
 var app = express();
@@ -9861,6 +10761,86 @@ function getDbFilePath() {
   }
   return path.resolve(localDir, "cars_database.json");
 }
+function getImagesDir() {
+  const baseDir = fs.existsSync("/data") ? "/data" : path.resolve(__dirname, "data");
+  const imagesDir = path.resolve(baseDir, "images");
+  if (!fs.existsSync(imagesDir)) {
+    try {
+      fs.mkdirSync(imagesDir, { recursive: true });
+    } catch {
+    }
+  }
+  return imagesDir;
+}
+function getUploadsDir() {
+  const baseDir = fs.existsSync("/data") ? "/data" : path.resolve(__dirname, "data");
+  const uploadsDir = path.resolve(baseDir, "uploads");
+  if (!fs.existsSync(uploadsDir)) {
+    try {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    } catch {
+    }
+  }
+  return uploadsDir;
+}
+var diskImageSet = /* @__PURE__ */ new Set();
+function refreshDiskImageSet() {
+  try {
+    const dir = getImagesDir();
+    if (fs.existsSync(dir)) {
+      const files = fs.readdirSync(dir);
+      diskImageSet.clear();
+      for (const f of files) {
+        diskImageSet.add(f);
+        diskImageSet.add(f.replace(/\.[^/.]+$/, ""));
+      }
+    }
+  } catch (err) {
+    console.error("Error refreshing disk image index:", err);
+  }
+}
+refreshDiskImageSet();
+function generateFallbackCarSvg(colorName, modelName, isFull = false) {
+  let colorHex = "#3b82f6";
+  const c = (colorName || "").toLowerCase();
+  if (c.includes("\u0633\u0641\u06CC\u062F")) colorHex = "#ffffff";
+  else if (c.includes("\u0645\u0634\u06A9\u06CC") || c.includes("\u0633\u06CC\u0627\u0647")) colorHex = "#1e293b";
+  else if (c.includes("\u0646\u0642\u0631\u0647") || c.includes("\u0633\u0631\u0628\u06CC")) colorHex = "#94a3b8";
+  else if (c.includes("\u062E\u0627\u06A9\u0633\u062A\u0631\u06CC") || c.includes("\u0637\u0648\u0633\u06CC") || c.includes("\u062F\u0644\u0641\u06CC\u0646\u06CC")) colorHex = "#64748b";
+  else if (c.includes("\u0642\u0631\u0645\u0632") || c.includes("\u0622\u0644\u0628\u0627\u0644\u0648\u06CC\u06CC")) colorHex = "#dc2626";
+  else if (c.includes("\u0622\u0628\u06CC") || c.includes("\u06A9\u0627\u0631\u0628\u0646\u06CC")) colorHex = "#2563eb";
+  else if (c.includes("\u0633\u0628\u0632") || c.includes("\u06CC\u0634\u0645\u06CC")) colorHex = "#15803d";
+  else if (c.includes("\u0632\u0631\u062F") || c.includes("\u0637\u0644\u0627\u06CC\u06CC")) colorHex = "#eab308";
+  else if (c.includes("\u0642\u0647\u0648\u0647\u200C\u0627\u06CC") || c.includes("\u0645\u0633\u06CC")) colorHex = "#78350f";
+  const width = isFull ? 800 : 160;
+  const height = isFull ? 480 : 160;
+  const strokeColor = "#1e293b";
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
+    <defs>
+      <linearGradient id="bg_${colorHex.replace("#", "")}" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#f8fafc"/>
+        <stop offset="100%" stop-color="#e2e8f0"/>
+      </linearGradient>
+    </defs>
+    <rect width="${width}" height="${height}" fill="url(#bg_${colorHex.replace("#", "")})"/>
+    <ellipse cx="${width * 0.5}" cy="${height * 0.76}" rx="${width * 0.42}" ry="${height * 0.08}" fill="#0f172a" fill-opacity="0.2" />
+    <g>
+      <path d="M ${width * 0.28} ${height * 0.52} C ${width * 0.34} ${height * 0.32}, ${width * 0.62} ${height * 0.3}, ${width * 0.72} ${height * 0.52} Z" fill="#334155" />
+      <path d="M ${width * 0.31} ${height * 0.5} C ${width * 0.36} ${height * 0.35}, ${width * 0.6} ${height * 0.34}, ${width * 0.69} ${height * 0.5} Z" fill="#93c5fd" opacity="0.85" />
+      <line x1="${width * 0.5}" y1="${height * 0.35}" x2="${width * 0.5}" y2="${height * 0.5}" stroke="#1e293b" stroke-width="${isFull ? 4 : 2}"/>
+      <path d="M ${width * 0.12} ${height * 0.62} C ${width * 0.12} ${height * 0.52}, ${width * 0.2} ${height * 0.5}, ${width * 0.28} ${height * 0.52} L ${width * 0.72} ${height * 0.52} C ${width * 0.8} ${height * 0.52}, ${width * 0.88} ${height * 0.55}, ${width * 0.88} ${height * 0.64} C ${width * 0.88} ${height * 0.7}, ${width * 0.82} ${height * 0.72}, ${width * 0.76} ${height * 0.72} L ${width * 0.24} ${height * 0.72} C ${width * 0.16} ${height * 0.72}, ${width * 0.12} ${height * 0.68}, ${width * 0.12} ${height * 0.62} Z" fill="${colorHex}" stroke="${strokeColor}" stroke-width="${isFull ? 3 : 1.5}" />
+      <circle cx="${width * 0.84}" cy="${height * 0.58}" r="${isFull ? 10 : 3}" fill="#fef08a" />
+      <circle cx="${width * 0.16}" cy="${height * 0.58}" r="${isFull ? 8 : 2.5}" fill="#ef4444" />
+      <g>
+        <circle cx="${width * 0.28}" cy="${height * 0.72}" r="${height * 0.12}" fill="#0f172a" stroke="#cbd5e1" stroke-width="${isFull ? 3 : 1.5}"/>
+        <circle cx="${width * 0.28}" cy="${height * 0.72}" r="${height * 0.05}" fill="#94a3b8"/>
+        <circle cx="${width * 0.72}" cy="${height * 0.72}" r="${height * 0.12}" fill="#0f172a" stroke="#cbd5e1" stroke-width="${isFull ? 3 : 1.5}"/>
+        <circle cx="${width * 0.72}" cy="${height * 0.72}" r="${height * 0.05}" fill="#94a3b8"/>
+      </g>
+    </g>
+    <text x="${width * 0.5}" y="${height * 0.92}" font-family="sans-serif" font-size="${isFull ? 24 : 11}" font-weight="bold" fill="#475569" text-anchor="middle" direction="rtl">${modelName}</text>
+  </svg>`;
+}
 function readDatabaseFromDisk() {
   const filePath = getDbFilePath();
   try {
@@ -9869,27 +10849,36 @@ function readDatabaseFromDisk() {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         return {
+          revision: 1,
           lastUpdated: (/* @__PURE__ */ new Date()).toISOString(),
           publishedBy: "\u0633\u0627\u0645\u0627\u0646\u0647",
           hiddenBatches: [],
-          listings: parsed
+          listings: parsed,
+          tombstones: [],
+          confirmedBatches: {}
         };
       }
       return {
+        revision: typeof parsed.revision === "number" ? parsed.revision : 1,
         lastUpdated: parsed.lastUpdated || (/* @__PURE__ */ new Date()).toISOString(),
         publishedBy: parsed.publishedBy || "\u0645\u062F\u06CC\u0631 \u0633\u06CC\u0633\u062A\u0645",
         hiddenBatches: Array.isArray(parsed.hiddenBatches) ? parsed.hiddenBatches : [],
-        listings: Array.isArray(parsed.listings) ? parsed.listings : []
+        listings: Array.isArray(parsed.listings) ? parsed.listings : [],
+        tombstones: Array.isArray(parsed.tombstones) ? parsed.tombstones : [],
+        confirmedBatches: parsed.confirmedBatches && typeof parsed.confirmedBatches === "object" ? parsed.confirmedBatches : {}
       };
     }
   } catch (err) {
     console.error("Error reading database file from disk:", err);
   }
   return {
+    revision: 1,
     lastUpdated: (/* @__PURE__ */ new Date()).toISOString(),
     publishedBy: "\u067E\u06CC\u0634\u200C\u0641\u0631\u0636",
     hiddenBatches: [],
-    listings: []
+    listings: [],
+    tombstones: [],
+    confirmedBatches: {}
   };
 }
 var memoryDb = readDatabaseFromDisk();
@@ -10005,44 +10994,108 @@ app.get("/api/sync-meta", (req, res) => {
   const active = pruneOldServerListings(memoryDb.listings);
   const salesCount = active.filter((l) => l.type === "sale").length;
   const buysCount = active.filter((l) => l.type === "buy_request").length;
+  const recentTombstones = (memoryDb.tombstones || []).slice(-200);
   res.json({
     success: true,
+    revision: memoryDb.revision || 1,
     lastUpdated: memoryDb.lastUpdated,
     hiddenBatches: memoryDb.hiddenBatches || [],
     totalListings: active.length,
     salesCount,
-    buysCount
+    buysCount,
+    tombstones: recentTombstones
   });
 });
 app.get("/api/images/:id", (req, res) => {
   try {
-    const targetId = String(req.params.id || "").trim();
+    const rawParam = String(req.params.id || "").trim();
+    let targetId = rawParam;
+    try {
+      targetId = decodeURIComponent(rawParam);
+    } catch {
+    }
     const isFull = req.query.full === "true";
     const found = memoryDb.listings.find(
-      (l) => String(l.id) === targetId || String(l.imageFileName) === targetId
+      (l) => String(l.id) === targetId || String(l.id) === rawParam || String(l.imageFileName) === targetId || String(l.imageFileName) === rawParam || l.mediaId && (String(l.mediaId) === targetId || String(l.mediaId) === rawParam)
     );
-    if (!found) {
-      return res.status(404).send("Image not found");
+    const imagesDir = getImagesDir();
+    const candidates = [
+      path.join(imagesDir, `${targetId}.jpg`),
+      path.join(imagesDir, `${targetId}.png`),
+      path.join(imagesDir, `${targetId}.webp`),
+      path.join(imagesDir, targetId),
+      path.join(imagesDir, `${rawParam}.jpg`),
+      path.join(imagesDir, rawParam)
+    ];
+    if (found) {
+      if (found.imageFileName && !found.imageFileName.toLowerCase().endsWith(".txt")) {
+        const baseName = found.imageFileName.split("/").pop() || found.imageFileName;
+        const baseNoExt = baseName.replace(/\.[^/.]+$/, "");
+        candidates.push(path.join(imagesDir, baseName));
+        candidates.push(path.join(imagesDir, `${baseName}.jpg`));
+        candidates.push(path.join(imagesDir, `${baseNoExt}.jpg`));
+        candidates.push(path.join(imagesDir, `${baseNoExt}.png`));
+        candidates.push(path.join(imagesDir, `${baseNoExt}.webp`));
+      }
+      if (found.mediaId) {
+        candidates.push(path.join(imagesDir, `${found.mediaId}.jpg`));
+        candidates.push(path.join(imagesDir, String(found.mediaId)));
+      }
     }
-    const rawDataUrl = (isFull ? found.imageFullBase64 : found.imageThumbnailBase64) || found.imageThumbnailBase64 || found.imageFullBase64;
-    if (!rawDataUrl) {
-      return res.status(404).send("No image");
+    for (const filePath of candidates) {
+      const fileName = path.basename(filePath);
+      const fileNoExt = fileName.replace(/\.[^/.]+$/, "");
+      if (diskImageSet.has(fileName) || diskImageSet.has(fileNoExt) || fs.existsSync(filePath)) {
+        try {
+          const stat = fs.statSync(filePath);
+          if (stat.isFile() && stat.size > 0) {
+            const etag = `W/"${stat.size}-${stat.mtimeMs.toString(16)}"`;
+            if (req.headers["if-none-match"] === etag) {
+              return res.status(304).end();
+            }
+            let contentType = "image/jpeg";
+            if (filePath.endsWith(".png")) contentType = "image/png";
+            else if (filePath.endsWith(".webp")) contentType = "image/webp";
+            else if (filePath.endsWith(".svg")) contentType = "image/svg+xml";
+            res.setHeader("Content-Type", contentType);
+            res.setHeader("ETag", etag);
+            res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+            return res.sendFile(filePath);
+          }
+        } catch {
+        }
+      }
     }
-    if (rawDataUrl.startsWith("data:image/svg+xml")) {
-      const svgContent = rawDataUrl.includes("base64,") ? Buffer.from(rawDataUrl.split("base64,")[1], "base64").toString("utf-8") : decodeURIComponent(rawDataUrl.split("utf8,")[1] || rawDataUrl.split(",")[1] || "");
-      res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
-      res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
-      return res.send(svgContent);
+    if (found) {
+      const rawDataUrl = (isFull ? found.imageFullBase64 : found.imageThumbnailBase64) || found.imageThumbnailBase64 || found.imageFullBase64;
+      if (rawDataUrl && rawDataUrl.length > 20) {
+        if (rawDataUrl.startsWith("data:image/svg+xml")) {
+          const svgContent = rawDataUrl.includes("base64,") ? Buffer.from(rawDataUrl.split("base64,")[1], "base64").toString("utf-8") : decodeURIComponent(rawDataUrl.split("utf8,")[1] || rawDataUrl.split(",")[1] || "");
+          res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+          res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+          return res.send(svgContent);
+        }
+        const match = rawDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          const mimeType = match[1];
+          const buffer = Buffer.from(match[2], "base64");
+          fs.promises.writeFile(path.join(imagesDir, `${found.id}.jpg`), buffer).then(() => {
+            diskImageSet.add(String(found.id));
+            diskImageSet.add(`${found.id}.jpg`);
+          }).catch(() => {
+          });
+          res.setHeader("Content-Type", mimeType);
+          res.setHeader("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400");
+          return res.send(buffer);
+        }
+      }
     }
-    const match = rawDataUrl.match(/^data:([^;]+);base64,(.+)$/);
-    if (match) {
-      const mimeType = match[1];
-      const buffer = Buffer.from(match[2], "base64");
-      res.setHeader("Content-Type", mimeType);
-      res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
-      return res.send(buffer);
-    }
-    res.status(400).send("Invalid image format");
+    const model = found ? found.model || found.title || "\u062E\u0648\u062F\u0631\u0648" : "\u062E\u0648\u062F\u0631\u0648";
+    const color = found ? found.color || "\u0633\u0641\u06CC\u062F" : "\u0633\u0641\u06CC\u062F";
+    const fallbackSvg = generateFallbackCarSvg(color, model, isFull);
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    return res.status(200).send(fallbackSvg);
   } catch (err) {
     res.status(500).send(err.message || "Error serving image");
   }
@@ -10054,19 +11107,32 @@ app.get("/api/listings", (req, res) => {
     const onlyVisible = req.query.onlyVisible === "true";
     const isFast = req.query.format === "fast" || req.query.fast === "true";
     const baseListings = onlyVisible ? activeListings.filter((l) => !hiddenSet.has(l.importBatchName || "\u0628\u0633\u062A\u0647 \u067E\u06CC\u0634\u200C\u0641\u0631\u0636 \u0633\u0631\u0648\u0631")) : activeListings;
-    const returnedListings = isFast ? baseListings.map((item) => {
+    const returnedListings = baseListings.map((item) => {
+      const idStr = String(item.id);
+      const fnStr = item.imageFileName ? String(item.imageFileName).split("/").pop() || item.imageFileName : "";
+      const fnBase = fnStr.replace(/\.[^/.]+$/, "");
+      const mediaStr = item.mediaId ? String(item.mediaId) : "";
+      const hasDiskImg = diskImageSet.has(idStr) || diskImageSet.has(`${idStr}.jpg`) || Boolean(fnStr && (diskImageSet.has(fnStr) || diskImageSet.has(fnBase) || diskImageSet.has(`${fnStr}.jpg`))) || Boolean(mediaStr && (diskImageSet.has(mediaStr) || diskImageSet.has(`${mediaStr}.jpg`)));
       const hasThumb = Boolean(item.imageThumbnailBase64 && item.imageThumbnailBase64.length > 30);
       const hasFull = Boolean(item.imageFullBase64 && item.imageFullBase64.length > 30);
+      const hasPhoto = Boolean(item.hasPhoto || hasDiskImg || hasThumb || hasFull);
       const isSvg = (item.imageThumbnailBase64 || "").startsWith("data:image/svg+xml");
+      if (isFast) {
+        return {
+          ...item,
+          hasPhoto,
+          // Keep lightweight SVGs inlined, omit heavy raster image base64 in fast mode
+          imageThumbnailBase64: isSvg ? item.imageThumbnailBase64 : "",
+          imageFullBase64: "",
+          imageUrl: hasPhoto ? `/api/images/${encodeURIComponent(item.id)}?thumb=true` : void 0
+        };
+      }
       return {
         ...item,
-        hasPhoto: hasThumb || hasFull,
-        // Keep lightweight SVGs inlined, omit heavy raster image base64 in fast mode
-        imageThumbnailBase64: isSvg ? item.imageThumbnailBase64 : "",
-        imageFullBase64: "",
-        imageUrl: hasThumb || hasFull ? `/api/images/${encodeURIComponent(item.id)}?thumb=true` : void 0
+        hasPhoto,
+        imageUrl: hasPhoto ? `/api/images/${encodeURIComponent(item.id)}?thumb=true` : void 0
       };
-    }) : baseListings;
+    });
     res.json({
       success: true,
       lastUpdated: memoryDb.lastUpdated,
@@ -10171,9 +11237,48 @@ var handleUpdateListing = (req, res) => {
 };
 app.put("/api/listings/:id", handleUpdateListing);
 app.post("/api/listings/update", handleUpdateListing);
+app.delete("/api/listings/:id", (req, res) => {
+  try {
+    const targetId = String(req.params.id || "").trim();
+    if (!targetId) {
+      return res.status(400).json({ success: false, error: "\u0634\u0646\u0627\u0633\u0647 \u0622\u06AF\u0647\u06CC \u0627\u0631\u0633\u0627\u0644 \u0646\u0634\u062F\u0647 \u0627\u0633\u062A." });
+    }
+    const beforeCount = memoryDb.listings.length;
+    memoryDb.listings = memoryDb.listings.filter((l) => String(l.id) !== targetId);
+    const wasRemoved = memoryDb.listings.length < beforeCount;
+    memoryDb.revision = (memoryDb.revision || 1) + 1;
+    memoryDb.lastUpdated = (/* @__PURE__ */ new Date()).toISOString();
+    memoryDb.tombstones = memoryDb.tombstones || [];
+    if (!memoryDb.tombstones.some((t) => t.id === targetId)) {
+      memoryDb.tombstones.push({
+        id: targetId,
+        deletedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        revision: memoryDb.revision
+      });
+      if (memoryDb.tombstones.length > 500) {
+        memoryDb.tombstones = memoryDb.tombstones.slice(-500);
+      }
+    }
+    queueDiskSave();
+    broadcastSyncEvent("listing_deleted", {
+      id: targetId,
+      revision: memoryDb.revision
+    });
+    res.json({
+      success: true,
+      message: wasRemoved ? "\u0622\u06AF\u0647\u06CC \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0627\u0632 \u0633\u0631\u0648\u0631 \u0648 \u062A\u0645\u0627\u0645\u06CC \u062F\u0633\u062A\u06AF\u0627\u0647\u200C\u0647\u0627 \u062D\u0630\u0641 \u06AF\u0631\u062F\u06CC\u062F." : "\u0622\u06AF\u0647\u06CC \u062F\u0631 \u0633\u0631\u0648\u0631 \u06CC\u0627\u0641\u062A \u0646\u0634\u062F \u06CC\u0627 \u0642\u0628\u0644\u0627\u064B \u062D\u0630\u0641 \u0634\u062F\u0647 \u0628\u0648\u062F.",
+      id: targetId,
+      wasRemoved,
+      revision: memoryDb.revision,
+      total: memoryDb.listings.length
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 app.post("/api/admin/sync", (req, res) => {
   try {
-    const { listings: incomingListings, append = true, publishedBy } = req.body;
+    const { listings: incomingListings, append = true, publishedBy, jobId, batchId } = req.body;
     if (!Array.isArray(incomingListings)) {
       return res.status(400).json({ success: false, error: "\u0644\u06CC\u0633\u062A \u0622\u06AF\u0647\u06CC\u200C\u0647\u0627 \u0627\u0631\u0633\u0627\u0644 \u0646\u0634\u062F\u0647 \u0627\u0633\u062A." });
     }
@@ -10195,18 +11300,20 @@ app.post("/api/admin/sync", (req, res) => {
       finalList = [...incomingListings, ...preservedExisting];
     }
     const pruned = pruneOldServerListings(finalList);
-    memoryDb = {
-      lastUpdated: (/* @__PURE__ */ new Date()).toISOString(),
-      publishedBy: publishedBy || "\u0645\u062F\u06CC\u0631 \u0633\u06CC\u0633\u062A\u0645",
-      hiddenBatches: memoryDb.hiddenBatches || [],
-      listings: pruned
-    };
+    memoryDb.revision = (memoryDb.revision || 1) + 1;
+    memoryDb.lastUpdated = (/* @__PURE__ */ new Date()).toISOString();
+    memoryDb.publishedBy = publishedBy || "\u0645\u062F\u06CC\u0631 \u0633\u06CC\u0633\u062A\u0645";
+    memoryDb.listings = pruned;
     queueDiskSave();
-    broadcastSyncEvent("bulk_sync");
+    broadcastSyncEvent("bulk_sync", { revision: memoryDb.revision, jobId, batchId });
     res.json({
       success: true,
       message: `\u0628\u0627\u0646\u06A9 \u0627\u0637\u0644\u0627\u0639\u0627\u062A \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u062F\u0631 \u0633\u0631\u0648\u0631 \u0648 \u062F\u06CC\u062A\u0627\u0628\u06CC\u0633 \u0644\u06CC\u0627\u0631\u0627 \u0628\u0647 \u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06CC \u0634\u062F (${pruned.length} \u062E\u0648\u062F\u0631\u0648).`,
       count: pruned.length,
+      confirmedCount: incomingListings.length,
+      jobId,
+      batchId,
+      revision: memoryDb.revision,
       lastUpdated: memoryDb.lastUpdated
     });
   } catch (err) {
@@ -10215,9 +11322,32 @@ app.post("/api/admin/sync", (req, res) => {
 });
 app.post("/api/admin/sync-metadata", (req, res) => {
   try {
-    const { listings: incomingListings, append = true, publishedBy } = req.body;
+    const {
+      listings: incomingListings,
+      append = true,
+      publishedBy,
+      jobId,
+      batchId,
+      idempotencyKey
+    } = req.body;
     if (!Array.isArray(incomingListings)) {
       return res.status(400).json({ success: false, error: "\u0644\u06CC\u0633\u062A \u0622\u06AF\u0647\u06CC\u200C\u0647\u0627 \u0627\u0631\u0633\u0627\u0644 \u0646\u0634\u062F\u0647 \u0627\u0633\u062A." });
+    }
+    memoryDb.confirmedBatches = memoryDb.confirmedBatches || {};
+    const batchKey = batchId || idempotencyKey;
+    if (batchKey && memoryDb.confirmedBatches[batchKey]) {
+      const existingAudit = memoryDb.confirmedBatches[batchKey];
+      return res.json({
+        success: true,
+        message: "\u0627\u06CC\u0646 \u0628\u0633\u062A\u0647 \u0642\u0628\u0644\u0627\u064B \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0630\u062E\u06CC\u0631\u0647 \u0634\u062F\u0647 \u0627\u0633\u062A (Idempotent).",
+        jobId: existingAudit.jobId,
+        batchId: existingAudit.batchId,
+        confirmedCount: existingAudit.itemCount,
+        count: memoryDb.listings.length,
+        revision: memoryDb.revision || 1,
+        lastUpdated: memoryDb.lastUpdated,
+        isIdempotent: true
+      });
     }
     const incomingMap = /* @__PURE__ */ new Map();
     for (const item of incomingListings) {
@@ -10229,6 +11359,7 @@ app.post("/api/admin/sync-metadata", (req, res) => {
         incomingMap.delete(String(existing.id));
         return {
           ...incoming,
+          mediaId: incoming.mediaId || existing.mediaId,
           imageThumbnailBase64: existing.imageThumbnailBase64 || incoming.imageThumbnailBase64,
           imageFullBase64: existing.imageFullBase64 || incoming.imageFullBase64
         };
@@ -10239,18 +11370,29 @@ app.post("/api/admin/sync-metadata", (req, res) => {
       existingListings.unshift(newItem);
     }
     const pruned = pruneOldServerListings(existingListings);
-    memoryDb = {
-      lastUpdated: (/* @__PURE__ */ new Date()).toISOString(),
-      publishedBy: publishedBy || "\u0645\u062F\u06CC\u0631 \u0633\u06CC\u0633\u062A\u0645",
-      hiddenBatches: memoryDb.hiddenBatches || [],
-      listings: pruned
-    };
+    memoryDb.revision = (memoryDb.revision || 1) + 1;
+    memoryDb.lastUpdated = (/* @__PURE__ */ new Date()).toISOString();
+    memoryDb.publishedBy = publishedBy || "\u0645\u062F\u06CC\u0631 \u0633\u06CC\u0633\u062A\u0645";
+    memoryDb.listings = pruned;
+    if (batchKey) {
+      memoryDb.confirmedBatches[batchKey] = {
+        jobId: jobId || "job_default",
+        batchId: batchKey,
+        confirmedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        itemCount: incomingListings.length,
+        idempotencyKey
+      };
+    }
     queueDiskSave();
-    broadcastSyncEvent("bulk_sync");
+    broadcastSyncEvent("bulk_sync", { revision: memoryDb.revision, jobId, batchId });
     res.json({
       success: true,
-      message: `\u0627\u0637\u0644\u0627\u0639\u0627\u062A \u0645\u062A\u0646\u06CC \u062A\u0645\u0627\u0645\u06CC ${pruned.length} \u062E\u0648\u062F\u0631\u0648 \u062F\u0631 \u06F1 \u062B\u0627\u0646\u06CC\u0647 \u062F\u0631 \u0633\u0631\u0648\u0631 \u0641\u0639\u0627\u0644 \u0634\u062F \u0648 \u0628\u0631\u0627\u06CC \u062A\u0645\u0627\u0645 \u06A9\u0627\u0631\u0628\u0631\u0627\u0646 \u0646\u0645\u0627\u06CC\u0634 \u062F\u0627\u062F\u0647 \u0645\u06CC\u200C\u0634\u0648\u062F.`,
+      message: `\u0627\u0637\u0644\u0627\u0639\u0627\u062A \u0645\u062A\u0646\u06CC \u062A\u0645\u0627\u0645\u06CC ${incomingListings.length} \u062E\u0648\u062F\u0631\u0648 \u0627\u06CC\u0646 \u0628\u0633\u062A\u0647 \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u062F\u0631 \u062F\u06CC\u062A\u0627\u0628\u06CC\u0633 \u062B\u0628\u062A \u0634\u062F.`,
+      jobId,
+      batchId,
+      confirmedCount: incomingListings.length,
       count: pruned.length,
+      revision: memoryDb.revision,
       lastUpdated: memoryDb.lastUpdated
     });
   } catch (err) {
@@ -10259,7 +11401,7 @@ app.post("/api/admin/sync-metadata", (req, res) => {
 });
 app.post("/api/admin/sync-images", (req, res) => {
   try {
-    const { images = [] } = req.body;
+    const { images = [], jobId, batchId } = req.body;
     if (!Array.isArray(images)) {
       return res.status(400).json({ success: false, error: "\u062A\u0635\u0627\u0648\u06CC\u0631 \u0627\u0631\u0633\u0627\u0644 \u0646\u0634\u062F\u0647 \u0627\u0633\u062A." });
     }
@@ -10267,21 +11409,497 @@ app.post("/api/admin/sync-images", (req, res) => {
     for (const img of images) {
       if (img && img.id) {
         imgMap.set(String(img.id), img);
+        if (img.mediaId) {
+          imgMap.set(String(img.mediaId), img);
+        }
       }
     }
+    const imagesDir = getImagesDir();
     let updatedCount = 0;
     for (const item of memoryDb.listings) {
-      const found = imgMap.get(String(item.id));
+      const found = imgMap.get(String(item.id)) || (item.mediaId ? imgMap.get(String(item.mediaId)) : void 0) || (item.imageFileName ? imgMap.get(String(item.imageFileName)) : void 0);
       if (found) {
         if (found.thumb) item.imageThumbnailBase64 = found.thumb;
         if (found.full) item.imageFullBase64 = found.full;
+        item.hasPhoto = true;
+        item.imageUrl = `/api/images/${encodeURIComponent(item.id)}?thumb=true`;
+        const dataToSave = found.full || found.thumb;
+        if (dataToSave && dataToSave.includes(";base64,")) {
+          try {
+            const buf = Buffer.from(dataToSave.split(";base64,")[1], "base64");
+            fs.promises.writeFile(path.join(imagesDir, `${item.id}.jpg`), buf).catch(() => {
+            });
+            if (item.imageFileName && !item.imageFileName.toLowerCase().endsWith(".txt")) {
+              const baseName = item.imageFileName.split("/").pop() || item.imageFileName;
+              fs.promises.writeFile(path.join(imagesDir, baseName), buf).catch(() => {
+              });
+            }
+            if (item.mediaId) {
+              fs.promises.writeFile(path.join(imagesDir, `${item.mediaId}.jpg`), buf).catch(() => {
+              });
+            }
+          } catch {
+          }
+        }
         updatedCount++;
       }
     }
     if (updatedCount > 0) {
+      memoryDb.revision = (memoryDb.revision || 1) + 1;
       queueDiskSave();
     }
-    res.json({ success: true, updated: updatedCount });
+    res.json({
+      success: true,
+      jobId,
+      batchId,
+      updated: updatedCount,
+      confirmedCount: images.length,
+      revision: memoryDb.revision || 1
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+async function extractZipDirectlyToDisk(zipBuffer, customBatchName, publishedBy = "\u0645\u062F\u06CC\u0631 \u0633\u06CC\u0633\u062A\u0645") {
+  const imagesDir = getImagesDir();
+  const zip = new import_jszip2.default();
+  const loadedZip = await zip.loadAsync(zipBuffer);
+  const textMap = /* @__PURE__ */ new Map();
+  const jsonFiles = [];
+  const dataEntries = [];
+  const fileNames = Object.keys(loadedZip.files);
+  for (const name of fileNames) {
+    const entry = loadedZip.files[name];
+    if (entry.dir) continue;
+    const baseName = name.split("/").pop() || name;
+    if (baseName.toLowerCase().endsWith(".json")) {
+      jsonFiles.push(entry);
+    } else {
+      const idWithoutExt = baseName.replace(/\.[^/.]+$/, "");
+      dataEntries.push({ name, baseName, idWithoutExt, entry });
+    }
+  }
+  jsonFiles.sort((a, b) => {
+    const aName = a.name.split("/").pop()?.toLowerCase() || "";
+    const bName = b.name.split("/").pop()?.toLowerCase() || "";
+    if (aName === "session.json") return -1;
+    if (bName === "session.json") return 1;
+    return 0;
+  });
+  const sessionObj = { sellers: [], buyers: [] };
+  for (const jFile of jsonFiles) {
+    try {
+      const fileNameLower = jFile.name.toLowerCase();
+      const isDedicatedBuyerFile = /buyer|kharidar|kharid|order|request|moshtari|خریدار|خرید|سفارش|مشتری|درخواست/i.test(fileNameLower);
+      const isDedicatedSellerFile = /seller|forush|sale|froosh|فروش|فروشنده/i.test(fileNameLower);
+      const sessionContent = await jFile.async("string");
+      const parsed = JSON.parse(sessionContent);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (!item) continue;
+          if (isDedicatedBuyerFile) {
+            sessionObj.buyers = sessionObj.buyers || [];
+            sessionObj.buyers.push(item);
+          } else if (isDedicatedSellerFile) {
+            sessionObj.sellers = sessionObj.sellers || [];
+            sessionObj.sellers.push(item);
+          } else if (isBuyerRecord(item)) {
+            sessionObj.buyers = sessionObj.buyers || [];
+            sessionObj.buyers.push(item);
+          } else {
+            sessionObj.sellers = sessionObj.sellers || [];
+            sessionObj.sellers.push(item);
+          }
+        }
+      } else if (parsed && typeof parsed === "object") {
+        const extractedB = extractBuyersArray(parsed);
+        const extractedS = extractSellersArray(parsed);
+        if (isDedicatedBuyerFile) {
+          sessionObj.buyers = sessionObj.buyers || [];
+          sessionObj.buyers.push(...extractedB, ...extractedS);
+        } else if (isDedicatedSellerFile) {
+          sessionObj.sellers = sessionObj.sellers || [];
+          sessionObj.sellers.push(...extractedS, ...extractedB);
+        } else {
+          sessionObj.buyers = sessionObj.buyers || [];
+          sessionObj.buyers.push(...extractedB);
+          sessionObj.sellers = sessionObj.sellers || [];
+          sessionObj.sellers.push(...extractedS);
+        }
+        if (parsed.normalizationRules) {
+          sessionObj.normalizationRules = sessionObj.normalizationRules || parsed.normalizationRules;
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to parse json file from zip:", jFile.name, err);
+    }
+  }
+  const knownTxtIds = /* @__PURE__ */ new Set();
+  const idToFileName = /* @__PURE__ */ new Map();
+  const allRecords = [...sessionObj.sellers || [], ...sessionObj.buyers || []];
+  for (const rec of allRecords) {
+    if (!rec) continue;
+    const fName = (rec.imageFileName || rec.fileName || rec.\u0646\u0627\u0645_\u0641\u0627\u06CC\u0644 || "").toString().trim();
+    if (rec.id && fName) {
+      idToFileName.set(String(rec.id).trim(), fName);
+    }
+    if (fName.toLowerCase().endsWith(".txt")) {
+      if (rec.id) knownTxtIds.add(String(rec.id).trim());
+      knownTxtIds.add(fName);
+      knownTxtIds.add(fName.replace(/\.[^/.]+$/, ""));
+    }
+  }
+  let savedImagesCount = 0;
+  for (const { name, baseName, idWithoutExt, entry } of dataEntries) {
+    try {
+      const lowerBase = baseName.toLowerCase();
+      const nodeBuffer = await entry.async("nodebuffer");
+      if (!nodeBuffer || nodeBuffer.length === 0) continue;
+      const bytes = nodeBuffer;
+      const isJpeg = bytes.length >= 2 && bytes[0] === 255 && bytes[1] === 216;
+      const isPng = bytes.length >= 4 && bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
+      const isGif = bytes.length >= 3 && bytes[0] === 71 && bytes[1] === 73 && bytes[2] === 70;
+      const isWebp = bytes.length >= 12 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80;
+      const isBmp = bytes.length >= 2 && bytes[0] === 66 && bytes[1] === 77;
+      const hasImageMagic = isJpeg || isPng || isGif || isWebp || isBmp;
+      if (hasImageMagic) {
+        const ext = isPng ? ".png" : isWebp ? ".webp" : isGif ? ".gif" : ".jpg";
+        await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}${ext}`), nodeBuffer);
+        await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}.jpg`), nodeBuffer);
+        if (baseName !== idWithoutExt) {
+          await fs.promises.writeFile(path.join(imagesDir, baseName), nodeBuffer);
+        }
+        const mappedFName = idToFileName.get(idWithoutExt) || idToFileName.get(baseName);
+        if (mappedFName && mappedFName !== baseName) {
+          await fs.promises.writeFile(path.join(imagesDir, mappedFName), nodeBuffer);
+        }
+        diskImageSet.add(idWithoutExt);
+        diskImageSet.add(`${idWithoutExt}.jpg`);
+        diskImageSet.add(baseName);
+        if (mappedFName) diskImageSet.add(mappedFName);
+        savedImagesCount++;
+        continue;
+      }
+      let rawStr = "";
+      try {
+        rawStr = nodeBuffer.toString("utf-8").replace(/^\uFEFF/, "").trim();
+      } catch {
+      }
+      if (rawStr) {
+        if (rawStr.startsWith("data:image/")) {
+          const match = rawStr.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            const buf = Buffer.from(match[2], "base64");
+            await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}.jpg`), buf);
+            await fs.promises.writeFile(path.join(imagesDir, baseName), buf);
+            diskImageSet.add(idWithoutExt);
+            diskImageSet.add(`${idWithoutExt}.jpg`);
+            diskImageSet.add(baseName);
+            savedImagesCount++;
+            continue;
+          }
+        } else if (rawStr.startsWith("/9j/") || rawStr.startsWith("iVBORw0KGgo") || rawStr.startsWith("UklGR")) {
+          const buf = Buffer.from(rawStr.replace(/\s+/g, ""), "base64");
+          await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}.jpg`), buf);
+          await fs.promises.writeFile(path.join(imagesDir, baseName), buf);
+          diskImageSet.add(idWithoutExt);
+          diskImageSet.add(`${idWithoutExt}.jpg`);
+          diskImageSet.add(baseName);
+          savedImagesCount++;
+          continue;
+        }
+        textMap.set(idWithoutExt, rawStr);
+        textMap.set(baseName, rawStr);
+      }
+    } catch (err) {
+      console.warn("Error processing zip entry:", name, err);
+    }
+  }
+  const knownRecordIds = new Set(allRecords.map((r) => String(r.id || "").trim()));
+  for (const { name, baseName, idWithoutExt } of dataEntries) {
+    if (knownRecordIds.has(idWithoutExt) || knownRecordIds.has(baseName)) continue;
+    const decodedText = textMap.get(idWithoutExt) || textMap.get(baseName) || "";
+    const hasImage = diskImageSet.has(idWithoutExt) || diskImageSet.has(baseName);
+    if (!decodedText && !hasImage) continue;
+    const fullContext = `${name} ${baseName} ${decodedText}`;
+    const isBuyer = /buyer|kharidar|kharid|order|request|moshtari|خریدار|خرید|سفارش|مشتری|درخواست|بودجه|متقاضی|می‌خوام|میخوام/i.test(fullContext);
+    const standaloneRecord = {
+      id: idWithoutExt || baseName,
+      imageFileName: baseName,
+      status: "success",
+      type: isBuyer ? "buy_request" : "sale"
+    };
+    if (decodedText) {
+      standaloneRecord.\u0645\u062A\u0646 = decodedText;
+      standaloneRecord.\u062A\u0648\u0636\u06CC\u062D\u0627\u062A = decodedText;
+    }
+    if (isBuyer) {
+      sessionObj.buyers = sessionObj.buyers || [];
+      sessionObj.buyers.push(standaloneRecord);
+    } else {
+      sessionObj.sellers = sessionObj.sellers || [];
+      sessionObj.sellers.push(standaloneRecord);
+    }
+  }
+  const batchName = customBatchName || `car_session_${(/* @__PURE__ */ new Date()).toLocaleDateString("fa-IR").replace(/\//g, "_")}.zip`;
+  const result = parseSessionJson(sessionObj, /* @__PURE__ */ new Map(), textMap, batchName);
+  for (const item of result.listings) {
+    const idStr = String(item.id);
+    const fnStr = item.imageFileName ? String(item.imageFileName).split("/").pop() || item.imageFileName : "";
+    const fnBase = fnStr.replace(/\.[^/.]+$/, "");
+    const mediaStr = item.mediaId ? String(item.mediaId) : "";
+    const hasPhoto = diskImageSet.has(idStr) || diskImageSet.has(`${idStr}.jpg`) || Boolean(fnStr && (diskImageSet.has(fnStr) || diskImageSet.has(fnBase) || diskImageSet.has(`${fnStr}.jpg`))) || Boolean(mediaStr && (diskImageSet.has(mediaStr) || diskImageSet.has(`${mediaStr}.jpg`)));
+    item.hasPhoto = Boolean(item.hasPhoto || hasPhoto);
+    item.imageUrl = item.hasPhoto ? `/api/images/${encodeURIComponent(item.id)}?thumb=true` : void 0;
+    item.imageThumbnailBase64 = "";
+    item.imageFullBase64 = "";
+  }
+  const otherBatches = memoryDb.listings.filter((l) => (l.importBatchName || "") !== batchName);
+  const combined = [...result.listings, ...otherBatches];
+  memoryDb.revision = (memoryDb.revision || 1) + 1;
+  memoryDb.lastUpdated = (/* @__PURE__ */ new Date()).toISOString();
+  memoryDb.publishedBy = publishedBy;
+  memoryDb.listings = pruneOldServerListings(combined);
+  refreshDiskImageSet();
+  queueDiskSave();
+  broadcastSyncEvent("bulk_sync", {
+    revision: memoryDb.revision,
+    batchName,
+    totalListings: memoryDb.listings.length
+  });
+  return {
+    success: true,
+    message: `\u0641\u0627\u06CC\u0644 \u0628\u0627 \u0645\u0648\u0641\u0642\u06CC\u062A \u0648 \u0645\u0639\u0645\u0627\u0631\u06CC \u0635\u0641\u0631-\u0631\u0645 \u062F\u0631 \u062F\u06CC\u0633\u06A9 \u062F\u0627\u0626\u0645\u06CC \u0644\u06CC\u0627\u0631\u0627 \u067E\u0631\u062F\u0627\u0632\u0634 \u0634\u062F: ${result.sellersCount} \u062E\u0648\u062F\u0631\u0648\u060C ${result.buyersCount} \u0645\u062A\u0642\u0627\u0636\u06CC \u062E\u0631\u06CC\u062F \u0648 ${savedImagesCount} \u062A\u0635\u0648\u06CC\u0631 \u0630\u062E\u06CC\u0631\u0647 \u0634\u062F\u0646\u062F.`,
+    total: memoryDb.listings.length,
+    batchCount: result.listings.length,
+    sellersCount: result.sellersCount,
+    buyersCount: result.buyersCount,
+    extractedImagesCount: savedImagesCount,
+    batchName,
+    revision: memoryDb.revision,
+    lastUpdated: memoryDb.lastUpdated
+  };
+}
+app.post("/api/admin/upload-chunk/init", (req, res) => {
+  try {
+    const { uploadId, fileName, fileSize, totalChunks, batchName, publishedBy } = req.body;
+    if (!uploadId || !totalChunks) {
+      return res.status(400).json({ success: false, error: "\u067E\u0627\u0631\u0627\u0645\u062A\u0631\u0647\u0627\u06CC \u0634\u0631\u0648\u0639 \u0622\u067E\u0644\u0648\u062F \u0646\u0627\u0642\u0635 \u0627\u0633\u062A." });
+    }
+    const uploadsDir = getUploadsDir();
+    const sessionDir = path.join(uploadsDir, uploadId);
+    if (!fs.existsSync(sessionDir)) {
+      fs.mkdirSync(sessionDir, { recursive: true });
+    }
+    const meta = {
+      uploadId,
+      fileName: fileName || "archive.zip",
+      fileSize: Number(fileSize) || 0,
+      totalChunks: Number(totalChunks),
+      batchName: batchName || fileName || `car_session_${Date.now()}.zip`,
+      publishedBy: publishedBy || "\u0645\u062F\u06CC\u0631 \u0633\u06CC\u0633\u062A\u0645",
+      createdAt: Date.now()
+    };
+    fs.writeFileSync(path.join(sessionDir, "meta.json"), JSON.stringify(meta), "utf-8");
+    const files = fs.readdirSync(sessionDir);
+    const receivedChunks = [];
+    for (const f of files) {
+      const m = f.match(/^chunk_(\d+)\.part$/);
+      if (m) {
+        receivedChunks.push(parseInt(m[1], 10));
+      }
+    }
+    receivedChunks.sort((a, b) => a - b);
+    res.json({
+      success: true,
+      uploadId,
+      receivedChunks,
+      totalChunks: meta.totalChunks
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+app.post(
+  "/api/admin/upload-chunk",
+  express.raw({ type: () => true, limit: "10mb" }),
+  async (req, res) => {
+    try {
+      const uploadId = String(req.query.uploadId || "").trim();
+      const chunkIndex = parseInt(String(req.query.chunkIndex || "-1"), 10);
+      if (!uploadId || chunkIndex < 0) {
+        return res.status(400).json({ success: false, error: "\u0634\u0646\u0627\u0633\u0647 \u06CC\u0627 \u0634\u0645\u0627\u0631\u0647 \u062A\u06A9\u0647 \u0646\u0627\u0645\u0639\u062A\u0628\u0631 \u0627\u0633\u062A." });
+      }
+      const rawBuffer = req.body;
+      if (!rawBuffer || !(rawBuffer instanceof Buffer) || rawBuffer.length === 0) {
+        return res.status(400).json({ success: false, error: "\u0645\u062D\u062A\u0648\u0627\u06CC \u062A\u06A9\u0647 \u062E\u0627\u0644\u06CC \u0627\u0633\u062A." });
+      }
+      const uploadsDir = getUploadsDir();
+      const sessionDir = path.join(uploadsDir, uploadId);
+      if (!fs.existsSync(sessionDir)) {
+        fs.mkdirSync(sessionDir, { recursive: true });
+      }
+      const chunkPath = path.join(sessionDir, `chunk_${chunkIndex}.part`);
+      await fs.promises.writeFile(chunkPath, rawBuffer);
+      res.json({
+        success: true,
+        uploadId,
+        chunkIndex,
+        receivedBytes: rawBuffer.length
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
+app.get("/api/admin/upload-chunk/status/:uploadId", (req, res) => {
+  try {
+    const uploadId = String(req.params.uploadId || "").trim();
+    const uploadsDir = getUploadsDir();
+    const sessionDir = path.join(uploadsDir, uploadId);
+    if (!fs.existsSync(sessionDir)) {
+      return res.status(404).json({ success: false, error: "\u0646\u0634\u0633\u062A \u0622\u067E\u0644\u0648\u062F \u06CC\u0627\u0641\u062A \u0646\u0634\u062F." });
+    }
+    const files = fs.readdirSync(sessionDir);
+    const receivedChunks = [];
+    for (const f of files) {
+      const m = f.match(/^chunk_(\d+)\.part$/);
+      if (m) receivedChunks.push(parseInt(m[1], 10));
+    }
+    receivedChunks.sort((a, b) => a - b);
+    let meta = {};
+    const metaPath = path.join(sessionDir, "meta.json");
+    if (fs.existsSync(metaPath)) {
+      try {
+        meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+      } catch {
+      }
+    }
+    res.json({
+      success: true,
+      uploadId,
+      totalChunks: meta.totalChunks || receivedChunks.length,
+      receivedChunks
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+app.post("/api/admin/upload-chunk/finalize", async (req, res) => {
+  try {
+    const { uploadId, batchName: customBatchName, publishedBy: customPublishedBy } = req.body;
+    if (!uploadId) {
+      return res.status(400).json({ success: false, error: "\u0634\u0646\u0627\u0633\u0647 \u0622\u067E\u0644\u0648\u062F \u0627\u0631\u0633\u0627\u0644 \u0646\u0634\u062F\u0647 \u0627\u0633\u062A." });
+    }
+    const uploadsDir = getUploadsDir();
+    const sessionDir = path.join(uploadsDir, uploadId);
+    if (!fs.existsSync(sessionDir)) {
+      return res.status(404).json({ success: false, error: "\u067E\u0648\u0634\u0647 \u0646\u0634\u0633\u062A \u0622\u067E\u0644\u0648\u062F \u06CC\u0627\u0641\u062A \u0646\u0634\u062F." });
+    }
+    let meta = {};
+    const metaPath = path.join(sessionDir, "meta.json");
+    if (fs.existsSync(metaPath)) {
+      try {
+        meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+      } catch {
+      }
+    }
+    const totalChunks = meta.totalChunks;
+    if (!totalChunks || totalChunks <= 0) {
+      return res.status(400).json({ success: false, error: "\u0627\u0637\u0644\u0627\u0639\u0627\u062A \u062A\u0639\u062F\u0627\u062F \u062A\u06A9\u0647\u200C\u0647\u0627 \u062F\u0631 \u0633\u0631\u0648\u0631 \u0646\u0627\u0642\u0635 \u0627\u0633\u062A." });
+    }
+    const missingChunks = [];
+    for (let i = 0; i < totalChunks; i++) {
+      if (!fs.existsSync(path.join(sessionDir, `chunk_${i}.part`))) {
+        missingChunks.push(i);
+      }
+    }
+    if (missingChunks.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `\u062A\u0639\u062F\u0627\u062F\u06CC \u0627\u0632 \u062A\u06A9\u0647\u200C\u0647\u0627 \u062F\u0631\u06CC\u0627\u0641\u062A \u0646\u0634\u062F\u0647\u200C\u0627\u0646\u062F (${missingChunks.length} \u062A\u06A9\u0647 \u0646\u0627\u0642\u0635).`,
+        missingChunks
+      });
+    }
+    const completeZipPath = path.join(sessionDir, "complete.zip");
+    const writeStream = fs.createWriteStream(completeZipPath);
+    for (let i = 0; i < totalChunks; i++) {
+      const partPath = path.join(sessionDir, `chunk_${i}.part`);
+      await new Promise((resolve, reject) => {
+        const readStream = fs.createReadStream(partPath);
+        readStream.on("error", reject);
+        readStream.pipe(writeStream, { end: false });
+        readStream.on("end", resolve);
+      });
+    }
+    writeStream.end();
+    await new Promise((resolve, reject) => {
+      writeStream.on("finish", resolve);
+      writeStream.on("error", reject);
+    });
+    for (let i = 0; i < totalChunks; i++) {
+      try {
+        fs.unlinkSync(path.join(sessionDir, `chunk_${i}.part`));
+      } catch {
+      }
+    }
+    const zipBuffer = await fs.promises.readFile(completeZipPath);
+    const targetBatchName = customBatchName || meta.batchName || meta.fileName || `car_session_${Date.now()}.zip`;
+    const targetPublishedBy = customPublishedBy || meta.publishedBy || "\u0645\u062F\u06CC\u0631 \u0633\u06CC\u0633\u062A\u0645 (\u0622\u067E\u0644\u0648\u062F \u062A\u06A9\u0647\u200C\u0627\u06CC)";
+    const extractResult = await extractZipDirectlyToDisk(zipBuffer, targetBatchName, targetPublishedBy);
+    try {
+      if (fs.existsSync(completeZipPath)) fs.unlinkSync(completeZipPath);
+      if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+      fs.rmdirSync(sessionDir);
+    } catch (cleanupErr) {
+      console.warn("Could not clean up temporary upload directory:", cleanupErr);
+    }
+    res.json(extractResult);
+  } catch (err) {
+    console.error("Error in upload-chunk/finalize:", err);
+    res.status(500).json({ success: false, error: err.message || "\u062E\u0637\u0627 \u062F\u0631 \u0646\u0647\u0627\u06CC\u06CC\u200C\u0633\u0627\u0632\u06CC \u0648 \u067E\u0631\u062F\u0627\u0632\u0634 \u0641\u0627\u06CC\u0644 \u0632\u06CC\u067E \u062F\u0631 \u0633\u0631\u0648\u0631" });
+  }
+});
+app.post(
+  "/api/admin/upload-zip",
+  express.raw({ type: () => true, limit: "300mb" }),
+  async (req, res) => {
+    try {
+      const rawBuffer = req.body;
+      if (!rawBuffer || !(rawBuffer instanceof Buffer) || rawBuffer.length < 50) {
+        return res.status(400).json({ success: false, error: "\u0641\u0627\u06CC\u0644 \u0632\u06CC\u067E \u0627\u0631\u0633\u0627\u0644\u06CC \u0646\u0627\u0645\u0639\u062A\u0628\u0631 \u06CC\u0627 \u062E\u0627\u0644\u06CC \u0627\u0633\u062A." });
+      }
+      const customBatchName = req.query.batchName || `car_session_${(/* @__PURE__ */ new Date()).toLocaleDateString("fa-IR").replace(/\//g, "_")}.zip`;
+      const publishedBy = req.query.publishedBy || "\u0645\u062F\u06CC\u0631 \u0633\u06CC\u0633\u062A\u0645 (\u0622\u067E\u0644\u0648\u062F \u0645\u0633\u062A\u0642\u06CC\u0645 \u0632\u06CC\u067E)";
+      const extractResult = await extractZipDirectlyToDisk(rawBuffer, customBatchName, publishedBy);
+      res.json(extractResult);
+    } catch (err) {
+      console.error("Error in upload-zip:", err);
+      res.status(500).json({ success: false, error: err.message || "\u062E\u0637\u0627 \u062F\u0631 \u067E\u0631\u062F\u0627\u0632\u0634 \u0641\u0627\u06CC\u0644 \u0632\u06CC\u067E \u062F\u0631 \u0633\u0631\u0648\u0631" });
+    }
+  }
+);
+app.get("/api/admin/verify-integrity", (req, res) => {
+  try {
+    const active = pruneOldServerListings(memoryDb.listings);
+    const salesCount = active.filter((l) => l.type === "sale").length;
+    const buysCount = active.filter((l) => l.type === "buy_request").length;
+    const batchesMap = {};
+    for (const item of active) {
+      const b = item.importBatchName || "\u067E\u06CC\u0634\u200C\u0641\u0631\u0636";
+      batchesMap[b] = (batchesMap[b] || 0) + 1;
+    }
+    res.json({
+      success: true,
+      totalListings: active.length,
+      salesCount,
+      buysCount,
+      revision: memoryDb.revision || 1,
+      lastUpdated: memoryDb.lastUpdated,
+      batches: batchesMap,
+      tombstonesCount: (memoryDb.tombstones || []).length,
+      confirmedBatchesCount: Object.keys(memoryDb.confirmedBatches || {}).length
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -10292,7 +11910,10 @@ app.post("/api/admin/clear", (req, res) => {
       lastUpdated: (/* @__PURE__ */ new Date()).toISOString(),
       publishedBy: "\u0645\u062F\u06CC\u0631 \u0633\u06CC\u0633\u062A\u0645",
       hiddenBatches: [],
-      listings: []
+      listings: [],
+      revision: (memoryDb.revision || 0) + 1,
+      tombstones: [],
+      confirmedBatches: {}
     };
     queueDiskSave();
     broadcastSyncEvent("clear");
@@ -10414,8 +12035,8 @@ function addDirToZip(zipInstance, dirPath, rootPrefix = "") {
 }
 app.get("/api/export/liara-zip", async (req, res) => {
   try {
-    const { default: JSZip } = await Promise.resolve().then(() => __toESM(require_lib3(), 1));
-    const zip = new JSZip();
+    const { default: JSZip3 } = await Promise.resolve().then(() => __toESM(require_lib3(), 1));
+    const zip = new JSZip3();
     const prodPackageJson = {
       name: "car-exhibition",
       private: true,
@@ -10426,7 +12047,8 @@ app.get("/api/export/liara-zip", async (req, res) => {
       },
       dependencies: {
         express: "^4.21.2",
-        dotenv: "^17.2.3"
+        dotenv: "^17.2.3",
+        jszip: "^3.10.2"
       }
     };
     zip.file("package.json", JSON.stringify(prodPackageJson, null, 2));

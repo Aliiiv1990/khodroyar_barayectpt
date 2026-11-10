@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Search, X, ChevronDown } from 'lucide-react';
+import { Search, X, ChevronDown, AlertTriangle } from 'lucide-react';
 import { CarListing, CarListingType, FilterOptions } from './types/car';
 import { generateRealisticCarListings } from './utils/dataGenerator';
 import { filterCarListings, buildSearchIndex } from './utils/persianSearch';
@@ -37,6 +37,7 @@ import {
   addListingToLiara,
   updateListingOnLiara,
   fetchSyncMetaFromLiara,
+  deleteListingFromLiara,
 } from './utils/liaraApi';
 
 const DEFAULT_FILTERS: FilterOptions = {
@@ -84,6 +85,14 @@ export default function App() {
   });
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isOffline, setIsOffline] = useState(() => {
+    return typeof navigator !== 'undefined' ? !navigator.onLine : false;
+  });
+  const [lastSyncTime, setLastSyncTime] = useState<string>(() => {
+    return typeof window !== 'undefined'
+      ? new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })
+      : '';
+  });
 
   // Apply root font-size dynamically
   useEffect(() => {
@@ -199,6 +208,8 @@ export default function App() {
           setListings(prunedListings);
           setStorageExplicitlyCleared(false);
           markUserVisited();
+          setIsOffline(false);
+          setLastSyncTime(new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }));
         }
 
         // Step 2b: Full background sync for offline IndexedDB persistence
@@ -209,11 +220,16 @@ export default function App() {
           setStorageExplicitlyCleared(false);
           markUserVisited();
           await saveListingsToIndexedDB(prunedListings);
+          setIsOffline(false);
+          setLastSyncTime(new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }));
           return true;
         }
         return Boolean(fastListings && fastListings.length > 0);
       } catch (err) {
         console.warn('Could not sync with Liara server:', err);
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          setIsOffline(true);
+        }
       }
       return false;
     };
@@ -274,6 +290,20 @@ export default function App() {
                 imageFullBase64: prev.imageFullBase64,
                 isEdited: true,
               });
+            });
+          } else if (data && data.type === 'listing_deleted' && data.id) {
+            // Authoritative server delete event: purge immediately across all devices
+            setListings((prev) => {
+              const next = prev.filter((item) => String(item.id) !== String(data.id));
+              saveListingsToIndexedDB(next);
+              return next;
+            });
+            setSelectedListing((prev) => {
+              if (prev && String(prev.id) === String(data.id)) {
+                setIsDetailOpen(false);
+                return null;
+              }
+              return prev;
             });
           } else if (data && data.type === 'clear') {
             safeFetchServerData(true, true);
@@ -337,6 +367,9 @@ export default function App() {
         const meta = await fetchSyncMetaFromLiara();
         if (!meta || !isMounted) return;
 
+        setIsOffline(false);
+        setLastSyncTime(new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }));
+
         // Check if batch visibility changed on another phone or laptop
         if (Array.isArray(meta.hiddenBatches)) {
           setHiddenBatches((curr) => {
@@ -351,13 +384,27 @@ export default function App() {
           });
         }
 
+        // Purge tombstones: deleted ads on server can NEVER resurrect from client cache
+        if (Array.isArray((meta as any).tombstones) && (meta as any).tombstones.length > 0) {
+          const tombSet = new Set((meta as any).tombstones.map(String));
+          setListings((prev) => {
+            const hasTomb = prev.some((l) => tombSet.has(String(l.id)));
+            if (!hasTomb) return prev;
+            const next = prev.filter((l) => !tombSet.has(String(l.id)));
+            saveListingsToIndexedDB(next);
+            return next;
+          });
+        }
+
         // Check if database updated (e.g. ad added or bulk sync on another device)
         if (meta.lastUpdated && meta.lastUpdated !== lastSeenServerTimestamp) {
           lastSeenServerTimestamp = meta.lastUpdated;
           await safeFetchServerData();
         }
       } catch {
-        // quiet network failure
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          setIsOffline(true);
+        }
       }
     };
 
@@ -386,9 +433,14 @@ export default function App() {
       }
     };
 
-    // Online Event: when internet connection reconnects, immediately check server
+    // Online & Offline Events
     const handleOnline = () => {
+      setIsOffline(false);
       checkSyncMeta();
+    };
+
+    const handleOffline = () => {
+      setIsOffline(true);
     };
 
     if (typeof document !== 'undefined') {
@@ -396,6 +448,7 @@ export default function App() {
     }
     if (typeof window !== 'undefined') {
       window.addEventListener('online', handleOnline);
+      window.addEventListener('offline', handleOffline);
     }
 
     return () => {
@@ -411,6 +464,7 @@ export default function App() {
       }
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
       }
     };
   }, []);
@@ -473,6 +527,21 @@ export default function App() {
 
     // 2. Persist to centralized Liara database so all phones receive the update
     await updateListingOnLiara(cleanUpdated);
+  }, []);
+
+  // Handle permanent deletion of an existing listing (Server-First authoritative tombstone)
+  const handleDeleteSingleListing = useCallback(async (id: string) => {
+    // 1. Optimistic removal locally and in IndexedDB
+    setListings((prev) => {
+      const next = prev.filter((item) => String(item.id) !== String(id));
+      saveListingsToIndexedDB(next);
+      return next;
+    });
+    setSelectedListing((prev) => (prev && String(prev.id) === String(id) ? null : prev));
+    setIsDetailOpen(false);
+
+    // 2. Authoritative deletion on Liara server with tombstone registration
+    await deleteListingFromLiara(id);
   }, []);
 
   // Hidden batches state
@@ -686,6 +755,16 @@ export default function App() {
 
   return (
     <div className="relative h-dvh max-h-dvh overflow-hidden bg-slate-50 dark:bg-[#0b0f17] flex flex-col max-w-4xl mx-auto px-2.5 sm:px-4 text-slate-900 dark:text-slate-100 select-none">
+      {/* Offline Status Banner (Section 8.5) */}
+      {isOffline && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-amber-500 text-slate-950 px-3 py-1.5 text-xs font-black shadow-md flex items-center justify-center gap-1.5 border-b border-amber-600 text-center animate-in slide-in-from-top duration-200">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0 animate-pulse text-slate-950" />
+          <span>
+            ارتباط با سرور برقرار نیست • نمایش آخرین همگام‌سازی: {toPersianDigits(lastSyncTime || 'لحظاتی پیش')}
+          </span>
+        </div>
+      )}
+
       {/* Ultra-Compact Top Peek Bar when main header is scrolled up */}
       <div
         className={`fixed top-0 left-0 right-0 z-30 transition-all duration-250 ease-out ${
@@ -853,6 +932,7 @@ export default function App() {
           setIsAuthModalOpen(true);
         }}
         onUpdateListing={handleUpdateSingleListing}
+        onDeleteListing={handleDeleteSingleListing}
       />
 
       {/* New Car Ad Registration (Voice or Manual) Modal */}

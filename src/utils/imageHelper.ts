@@ -71,6 +71,26 @@ export function getColorHex(colorName?: string): string {
  * Never leaves a car with empty or broken image.
  */
 export function getListingImage(listing: Partial<CarListing>, isFull = false): string {
+  // 1. If requesting full image and real photo exists:
+  if (isFull && listing.imageFullBase64 && listing.imageFullBase64.length > 20 && !listing.imageFullBase64.startsWith('data:image/svg+xml')) {
+    return listing.imageFullBase64;
+  }
+  // 2. If requesting thumbnail (or full not available) and real thumbnail exists:
+  if (!isFull && listing.imageThumbnailBase64 && listing.imageThumbnailBase64.length > 20 && !listing.imageThumbnailBase64.startsWith('data:image/svg+xml')) {
+    return listing.imageThumbnailBase64;
+  }
+  // 3. If imageFullBase64 exists as real photo:
+  if (listing.imageFullBase64 && listing.imageFullBase64.length > 20 && !listing.imageFullBase64.startsWith('data:image/svg+xml')) {
+    return listing.imageFullBase64;
+  }
+  // 4. Server-streamed image URL from persistent disk (/api/images/:id)
+  if (listing.imageUrl) {
+    return listing.imageUrl;
+  }
+  if (listing.hasPhoto && listing.id) {
+    return `/api/images/${encodeURIComponent(listing.id)}${isFull ? '?full=true' : '?thumb=true'}`;
+  }
+  // 5. Any explicit SVG illustration preserved in listing
   if (isFull && listing.imageFullBase64 && listing.imageFullBase64.length > 20) {
     return listing.imageFullBase64;
   }
@@ -80,13 +100,7 @@ export function getListingImage(listing: Partial<CarListing>, isFull = false): s
   if (listing.imageFullBase64 && listing.imageFullBase64.length > 20) {
     return listing.imageFullBase64;
   }
-  if (listing.imageUrl) {
-    return listing.imageUrl;
-  }
-  if (listing.hasPhoto && listing.id) {
-    return `/api/images/${encodeURIComponent(listing.id)}${isFull ? '?full=true' : '?thumb=true'}`;
-  }
-  // Generate dedicated illustration
+  // 6. Generate dedicated illustration as ultimate fallback
   const colorHex = getColorHex(listing.color);
   const modelName = listing.model || listing.title || 'خودرو';
   return generateCarSvg(colorHex, modelName, isFull);

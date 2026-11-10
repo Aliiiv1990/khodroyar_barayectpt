@@ -18,6 +18,7 @@ import {
   Settings,
   Sparkles,
   Pencil,
+  Trash2,
 } from 'lucide-react';
 
 interface CarDetailModalProps {
@@ -27,6 +28,7 @@ interface CarDetailModalProps {
   isUnlockedColleague: boolean;
   onRequestUnlock: () => void;
   onUpdateListing?: (updatedListing: CarListing) => Promise<void> | void;
+  onDeleteListing?: (id: string) => Promise<void> | void;
 }
 
 export const CarDetailModal: React.FC<CarDetailModalProps> = ({
@@ -36,6 +38,7 @@ export const CarDetailModal: React.FC<CarDetailModalProps> = ({
   isUnlockedColleague,
   onRequestUnlock,
   onUpdateListing,
+  onDeleteListing,
 }) => {
   const [copiedPhone, setCopiedPhone] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
@@ -43,6 +46,8 @@ export const CarDetailModal: React.FC<CarDetailModalProps> = ({
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const parsedFile = parseListingFileName(listing?.imageFileName);
   const effectivePhone =
@@ -355,6 +360,18 @@ export const CarDetailModal: React.FC<CarDetailModalProps> = ({
               </button>
             )}
 
+            {isUnlockedColleague && onDeleteListing && !isEditing && (
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirm(true)}
+                className="flex items-center gap-1 px-2 py-1 sm:px-2.5 sm:py-1.5 bg-black/60 hover:bg-rose-950/80 text-rose-300 hover:text-rose-200 rounded-xl sm:rounded-2xl text-xs font-bold backdrop-blur-md border border-rose-500/30 shadow-md cursor-pointer transition-colors shrink-0"
+                title="حذف دائمی آگهی از سرور"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                <span className="hidden sm:inline">حذف</span>
+              </button>
+            )}
+
             {!listing.isTextOnly && !isEditing && (
               <button
                 type="button"
@@ -369,6 +386,53 @@ export const CarDetailModal: React.FC<CarDetailModalProps> = ({
             )}
           </div>
         </div>
+
+        {/* Delete Confirmation Overlay */}
+        {showDeleteConfirm && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm"
+          >
+            <div className="bg-neutral-900 border border-rose-500/50 rounded-2xl p-5 max-w-sm w-full text-center space-y-3.5 shadow-2xl">
+              <div className="w-12 h-12 rounded-full bg-rose-500/20 text-rose-400 mx-auto flex items-center justify-center">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-black text-white">حذف آگهی خودرو</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                آیا از حذف دائم آگهی «{listing.title || listing.model}» از سرور لیارا و تمام تلفن‌های همراه مطمئن هستید؟
+              </p>
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={async () => {
+                    setIsDeleting(true);
+                    try {
+                      if (onDeleteListing) {
+                        await onDeleteListing(listing.id);
+                      }
+                    } finally {
+                      setIsDeleting(false);
+                      setShowDeleteConfirm(false);
+                      onClose();
+                    }
+                  }}
+                  className="flex-1 py-2.5 px-3 bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white rounded-xl text-xs font-black transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isDeleting ? 'در حال حذف...' : 'بله، حذف کن'}
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={() => setShowDeleteConfirm(false)}
+                  className="flex-1 py-2.5 px-3 bg-neutral-800 hover:bg-neutral-700 text-slate-200 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                >
+                  انصراف
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Content Area */}
         {listing.isTextOnly ? (

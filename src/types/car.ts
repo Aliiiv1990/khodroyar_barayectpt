@@ -35,6 +35,8 @@ export interface CarListing {
   // Batch and origin tracking for admin deletion and date management
   importBatchName?: string; // e.g. "archive_28oct.zip" or "ورودی روز شنبه"
   importDate?: string; // e.g. "1403/08/08"
+  mediaId?: string; // Media file identifier (can be shared across multiple listings)
+  revision?: number; // Version / Revision sequence for multi-device synchronization
   // Normalized cached string for instant sub-millisecond filtering
   _searchIndex?: string;
 }

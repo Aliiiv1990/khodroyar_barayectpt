@@ -30,6 +30,8 @@ import {
   LiaraHealthResponse,
   setLiaraBatchVisibility,
   setMultipleLiaraBatchesVisibility,
+  verifyServerIntegrity,
+  uploadZipFileToLiara,
 } from '../utils/liaraApi';
 import {
   X,
@@ -213,9 +215,76 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     count: number;
     sellersCount: number;
     buyersCount: number;
+    rawFile?: File;
   } | null>(null);
   const [publishingBatchName, setPublishingBatchName] = useState<string | null>(null);
+  const [isVerifyingIntegrity, setIsVerifyingIntegrity] = useState(false);
+  const [integrityReport, setIntegrityReport] = useState<{
+    success: boolean;
+    totalListings?: number;
+    salesCount?: number;
+    buysCount?: number;
+    revision?: number;
+    batches?: Record<string, number>;
+    error?: string;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const zipDirectFileInputRef = useRef<HTMLInputElement>(null);
+  const [isUploadingZipDirect, setIsUploadingZipDirect] = useState(false);
+  const [zipDirectProgress, setZipDirectProgress] = useState(0);
+
+  const handleDirectZipUpload = async (file: File) => {
+    setIsUploadingZipDirect(true);
+    setZipDirectProgress(0);
+    setImportStatus(`در حال آپلود و ذخیره فایل ${file.name} در دیسک دائمی لیارا...`);
+    setIsSuccess(false);
+
+    try {
+      const res = await uploadZipFileToLiara(file, file.name, (p, msg) => {
+        setZipDirectProgress(p);
+        if (msg) setImportStatus(msg);
+      });
+      if (res.success) {
+        setIsSuccess(true);
+        setImportStatus(res.message);
+
+        // Fetch fresh listings from server so client instantly reflects updated records and images!
+        const refreshed = await fetchListingsFromLiara(20000, true);
+        if (refreshed && refreshed.length > 0) {
+          onUpdateListings(refreshed);
+          await saveListingsToIndexedDB(refreshed);
+        }
+        await handleCheckLiara();
+        await loadBatches();
+      } else {
+        setIsSuccess(false);
+        setImportStatus(`خطا در آپلود به سرور: ${res.message}`);
+      }
+    } catch (err: any) {
+      setIsSuccess(false);
+      setImportStatus(`خطا در آپلود: ${err.message || 'مشکل در ارتباط با سرور'}`);
+    } finally {
+      setIsUploadingZipDirect(false);
+      if (zipDirectFileInputRef.current) zipDirectFileInputRef.current.value = '';
+    }
+  };
+
+  const handleVerifyIntegrity = async () => {
+    setIsVerifyingIntegrity(true);
+    setIntegrityReport(null);
+    try {
+      const res = await verifyServerIntegrity();
+      if (res) {
+        setIntegrityReport(res);
+      } else {
+        setIntegrityReport({ success: false, error: 'سرور پاسخی ارسال نکرد.' });
+      }
+    } catch (err: any) {
+      setIntegrityReport({ success: false, error: err.message || 'خطای شبکه' });
+    } finally {
+      setIsVerifyingIntegrity(false);
+    }
+  };
 
   // Load server batches and their visibility status
   const loadBatches = async () => {
@@ -718,34 +787,9 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
       // Case A: ZIP archive (car_session_*.zip)
       if (fileNameLower.endsWith('.zip')) {
-        const result = await parseZipArchive(file, file.name);
-
-        if (onAppendListings) {
-          onAppendListings(result.listings);
-        } else {
-          const existingOtherListings = listings.filter((l) => (l.importBatchName || '') !== file.name);
-          const mergedListings = [...result.listings, ...existingOtherListings];
-          setStorageExplicitlyCleared(false);
-          await saveListingsToIndexedDB(mergedListings);
-          onUpdateListings(mergedListings);
-        }
-
-        setNewlyImportedBatch({
-          batchName: file.name,
-          listings: result.listings,
-          count: result.listings.length,
-          sellersCount: result.sellersCount,
-          buyersCount: result.buyersCount,
-        });
-
-        setImportStatus(
-          `آرشیو زیپ (${file.name}) اضافه شد: ${toPersianDigits(result.sellersCount)} خودرو فروشی، ${toPersianDigits(
-            result.buyersCount
-          )} سفارش خرید آماده انتشار در لیارا هستند (فایل‌های قبلی حفظ شدند).`
-        );
-        setIsSuccess(true);
         setActiveTab('liara');
-        loadBatches();
+        await handleDirectZipUpload(file);
+        return;
       }
       // Case B: CSV file
       else if (fileNameLower.endsWith('.csv')) {
@@ -1167,6 +1211,63 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
                 </div>
               </div>
 
+              {/* Database Integrity Audit Card */}
+              <div className="bg-slate-900 border border-slate-700/80 p-3.5 rounded-2xl text-white space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs font-black">اعتبارسنجی یکپارچگی پایگاه داده (Data Integrity Audit)</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleVerifyIntegrity}
+                    disabled={isVerifyingIntegrity}
+                    className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-colors shadow-sm"
+                  >
+                    {isVerifyingIntegrity ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                    <span>بررسی و انطباق آگهی‌ها</span>
+                  </button>
+                </div>
+                {integrityReport && (
+                  <div className="bg-black/40 border border-white/10 rounded-xl p-2.5 text-[11px] space-y-1.5">
+                    <div className="flex items-center justify-between text-emerald-300 font-bold">
+                      <span>وضعیت پایگاه داده سرور:</span>
+                      <span>{integrityReport.success ? 'کاملاً منطبق و پایدار' : 'نیاز به بررسی'}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-slate-300">
+                      <span>مجموع کل آگهی‌ها روی دیسک دائمی:</span>
+                      <span className="font-bold text-white">{toPersianDigits(integrityReport.totalListings ?? 0)} خودرو</span>
+                    </div>
+                    <div className="flex items-center justify-between text-slate-400">
+                      <span>تفکیک:</span>
+                      <span>{toPersianDigits(integrityReport.salesCount ?? 0)} فروشنده | {toPersianDigits(integrityReport.buysCount ?? 0)} خریدار</span>
+                    </div>
+                    {integrityReport.revision !== undefined && (
+                      <div className="flex items-center justify-between text-slate-400">
+                        <span>شماره ویرایش (Revision):</span>
+                        <span className="font-mono text-purple-300 font-bold">{toPersianDigits(integrityReport.revision)}</span>
+                      </div>
+                    )}
+                    {integrityReport.batches && Object.keys(integrityReport.batches).length > 0 && (
+                      <div className="pt-1.5 border-t border-white/10 space-y-1">
+                        <span className="text-[10px] text-slate-400 block font-bold">بسته‌های موجود در سرور:</span>
+                        {Object.entries(integrityReport.batches).map(([bName, bCount]) => (
+                          <div key={bName} className="flex items-center justify-between text-[10px] text-slate-300 bg-white/5 px-2 py-0.5 rounded-lg">
+                            <span className="truncate max-w-[220px]">📁 {bName}</span>
+                            <span className="font-bold text-emerald-300">{toPersianDigits(bCount as number)} خودرو</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {integrityReport.error && (
+                      <div className="text-rose-400 text-[10px] font-bold">
+                        خطا: {integrityReport.error}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Progress bar during zip or sync */}
               {(isPublishingLiara || isFetchingLiara || isDownloadingLiaraZip) && (
                 <div className="bg-purple-50 p-3.5 rounded-2xl border border-purple-200">
@@ -1199,6 +1300,71 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
               {/* 3 Main Action Cards */}
               <div className="space-y-3">
+                {/* 🚀 Direct High-Speed ZIP Upload to Liara Disk */}
+                <div className="bg-gradient-to-br from-indigo-950 via-slate-900 to-purple-950 border-2 border-emerald-500/80 p-4 rounded-2xl shadow-lg text-white space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-300 flex items-center justify-center border border-emerald-400/40 shrink-0">
+                        <Zap className="w-5 h-5 text-amber-300" />
+                      </div>
+                      <div>
+                        <h5 className="font-black text-sm text-white flex items-center gap-2">
+                          <span>آپلود مستقیم فایل زیپ دیتابیس به سرور لیارا (با ذخیره دائمی عکس‌ها)</span>
+                          <span className="text-[10px] bg-emerald-500 text-slate-950 px-2 py-0.5 rounded-full font-black">
+                            پیشنهادی و فوری
+                          </span>
+                        </h5>
+                        <p className="text-[11px] text-slate-300 font-medium">
+                          آپلود فایل زیپ بدون پردازش سنگین مرورگر؛ عکس‌ها مستقیماً در دیسک /data/images ذخیره شده و روی تمام گوشی‌ها باز می‌شوند.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <input
+                    ref={zipDirectFileInputRef}
+                    type="file"
+                    accept=".zip"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handleDirectZipUpload(f);
+                    }}
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => zipDirectFileInputRef.current?.click()}
+                    disabled={isUploadingZipDirect}
+                    className="w-full py-3.5 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.99] text-slate-950 font-black text-xs sm:text-sm rounded-xl cursor-pointer shadow-md flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+                  >
+                    {isUploadingZipDirect ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
+                        <span>در حال ارسال مستقیم به دیسک سرور ({toPersianDigits(zipDirectProgress)}٪)...</span>
+                      </>
+                    ) : (
+                      <>
+                        <UploadCloud className="w-4 h-4 text-slate-950 stroke-[2.5]" />
+                        <span>انتخاب فایل car_session_*.zip و ارسال مستقیم به سرور و دیسک لیارا</span>
+                      </>
+                    )}
+                  </button>
+
+                  {isUploadingZipDirect && (
+                    <div className="space-y-1">
+                      <div className="w-full bg-black/50 h-2.5 rounded-full overflow-hidden border border-white/10">
+                        <div
+                          className="bg-emerald-400 h-2.5 rounded-full transition-all duration-150"
+                          style={{ width: `${Math.max(zipDirectProgress, 4)}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] text-slate-400 block text-left font-mono">
+                        {zipDirectProgress}% Uploaded
+                      </span>
+                    </div>
+                  )}
+                </div>
                 {/* 1. Drag & Drop Zip Download */}
                 <div className="bg-white border-2 border-purple-200 hover:border-purple-300 p-4 rounded-2xl shadow-2xs space-y-2.5 transition-all">
                   <div className="flex items-center justify-between">
@@ -1299,19 +1465,40 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
                       </div>
 
                       <div className="flex flex-wrap gap-2 pt-1">
-                        <button
-                          type="button"
-                          onClick={() => handlePublishToLiara(newlyImportedBatch.listings, newlyImportedBatch.batchName)}
-                          disabled={isPublishingLiara}
-                          className="flex-1 min-w-[200px] flex items-center justify-center gap-2 py-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 text-white font-black text-xs rounded-xl cursor-pointer shadow-md transition-all"
-                        >
-                          {isPublishingLiara && publishingBatchName === newlyImportedBatch.batchName ? (
-                            <RefreshCw className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <UploadCloud className="w-4 h-4" />
-                          )}
-                          <span>⚡ انتشار فقط همین فایل جدید ({toPersianDigits(newlyImportedBatch.count)} خودرو)</span>
-                        </button>
+                        {newlyImportedBatch.rawFile ? (
+                          <button
+                            type="button"
+                            onClick={() => handleDirectZipUpload(newlyImportedBatch.rawFile!)}
+                            disabled={isUploadingZipDirect}
+                            className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs sm:text-sm rounded-xl cursor-pointer shadow-md transition-all disabled:opacity-50"
+                          >
+                            {isUploadingZipDirect ? (
+                              <>
+                                <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                                <span>در حال ارسال مستقیم به دیسک سرور ({toPersianDigits(zipDirectProgress)}٪)...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Zap className="w-4 h-4 text-amber-300" />
+                                <span>⚡ ارسال مستقیم فایل ZIP به سرور لیارا (با ذخیره دائمی ۱۰۰٪ عکس‌ها)</span>
+                              </>
+                            )}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handlePublishToLiara(newlyImportedBatch.listings, newlyImportedBatch.batchName)}
+                            disabled={isPublishingLiara}
+                            className="flex-1 min-w-[200px] flex items-center justify-center gap-2 py-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 text-white font-black text-xs rounded-xl cursor-pointer shadow-md transition-all"
+                          >
+                            {isPublishingLiara && publishingBatchName === newlyImportedBatch.batchName ? (
+                              <RefreshCw className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <UploadCloud className="w-4 h-4" />
+                            )}
+                            <span>⚡ انتشار فقط همین فایل جدید ({toPersianDigits(newlyImportedBatch.count)} خودرو)</span>
+                          </button>
+                        )}
 
                         {listings.length > newlyImportedBatch.count && (
                           <button
