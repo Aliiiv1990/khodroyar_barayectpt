@@ -213,6 +213,9 @@ export async function publishListingsToLiara(
       }
     }
 
+    // Capture the exact IDs expected from this import. A successful HTTP status
+    // for each batch is not enough: verify the final server catalogue before reporting success.
+    const expectedIds = new Set(sanitizedListings.map((item) => String(item.id)));
     const uploadJobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const failedBatches: string[] = [];
     let totalSaved = sanitizedListings.length;
@@ -364,10 +367,29 @@ export async function publishListingsToLiara(
       };
     }
 
+    // Re-read the lightweight server catalogue and reconcile every submitted ID.
+    const verifiedListings = await fetchListingsFromLiara(45000, true);
+    if (!verifiedListings) {
+      return {
+        success: false,
+        message: 'بسته‌ها ارسال شدند، اما دریافت فهرست نهایی سرور برای تأیید ذخیره‌سازی ممکن نشد. لطفاً وضعیت سرور را بررسی و دوباره همگام‌سازی کنید.',
+        count: totalSaved,
+      };
+    }
+    const persistedIds = new Set(verifiedListings.map((item) => String(item.id)));
+    const missingIds = Array.from(expectedIds).filter((id) => !persistedIds.has(id));
+    if (missingIds.length > 0) {
+      return {
+        success: false,
+        message: `تأیید نهایی ناموفق بود: از ${expectedIds.size} شناسه ارسالی، ${missingIds.length} مورد در فهرست سرور پیدا نشد. هیچ موفقیت کاملی اعلام نمی‌شود؛ دوباره تلاش کنید.`,
+        count: verifiedListings.length,
+      };
+    }
+
     return {
       success: true,
-      message: `تمامی ${totalSaved} خودرو همراه با تصاویر و مشخصات با موفقیت در دیتابیس پایدار لیارا ثبت گردید و بلافاصله برای تمام دستگاه‌ها فعال شد.`,
-      count: totalSaved,
+      message: `تمام ${expectedIds.size} شناسه ارسالی در فهرست سرور تأیید شد؛ تعداد کل ثبت‌شده: ${verifiedListings.length}.`,
+      count: verifiedListings.length,
     };
   } catch (err: any) {
     let cleanMessage = err.message || 'مشکل ارتباط با سرور لیارا';
