@@ -670,7 +670,9 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     platform: 'Liara Cloud (Node.js)',
-    dbLocation: getDbFilePath(),
+    dbBackend: postgresPool ? 'postgresql' : 'json-file',
+    dbLocation: postgresPool ? 'PostgreSQL DBaaS' : getDbFilePath(),
+    imageStorage: fs.existsSync('/data') ? '/data/images (persistent disk)' : 'local filesystem (not persistent across container replacement)',
     isLiaraDisk: fs.existsSync('/data'),
     totalListings: active.length,
     salesCount,
@@ -758,7 +760,13 @@ app.get('/api/images/:id', (req, res) => {
     const imagesDir = getImagesDir();
 
     // 1. Check physical files on persistent disk (/data/images/)
+    const safeTargetId = safeImageStorageId(targetId);
     const candidates: string[] = [
+      // Preferred PostgreSQL-mode image variants stored outside JSON in /data/images.
+      ...['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'bmp', 'avif'].map((ext) =>
+        path.join(imagesDir, `${safeTargetId}.${isFull ? 'full' : 'thumb'}.${ext}`)
+      ),
+      // Legacy ZIP/direct-upload image paths remain readable for existing deployments.
       path.join(imagesDir, `${targetId}.jpg`),
       path.join(imagesDir, `${targetId}.png`),
       path.join(imagesDir, `${targetId}.webp`),
@@ -798,7 +806,10 @@ app.get('/api/images/:id', (req, res) => {
             let contentType = 'image/jpeg';
             if (filePath.endsWith('.png')) contentType = 'image/png';
             else if (filePath.endsWith('.webp')) contentType = 'image/webp';
+            else if (filePath.endsWith('.gif')) contentType = 'image/gif';
             else if (filePath.endsWith('.svg')) contentType = 'image/svg+xml';
+            else if (filePath.endsWith('.avif')) contentType = 'image/avif';
+            else if (filePath.endsWith('.bmp')) contentType = 'image/bmp';
 
             res.setHeader('Content-Type', contentType);
             res.setHeader('ETag', etag);
@@ -2160,12 +2171,33 @@ async function setupFrontend() {
   }
 }
 
-setupFrontend().then(() => {
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`=================================================`);
-    console.log(`🚗 Car Exhibition Server is LIVE on Liara Cloud!`);
-    console.log(`📍 Listening on: http://0.0.0.0:${PORT}`);
-    console.log(`💾 Database file: ${getDbFilePath()}`);
-    console.log(`=================================================`);
+initializePostgresStore()
+  .then(() => setupFrontend())
+  .then(() => {
+    const server = app.listen(PORT, '0.0.0.0', () => {
+      console.log(`=================================================`);
+      console.log(`🚗 Car Exhibition Server is LIVE on Liara Cloud!`);
+      console.log(`📍 Listening on: http://0.0.0.0:${PORT}`);
+      console.log(`💾 Database backend: ${postgresPool ? 'PostgreSQL' : getDbFilePath()}`);
+      console.log(`=================================================`);
+    });
+
+    const shutdown = (signal: string) => {
+      console.log(`Received ${signal}; closing server and database pool...`);
+      server.close(() => {
+        if (postgresPool) {
+          postgresPool.end().finally(() => process.exit(0));
+        } else {
+          process.exit(0);
+        }
+      });
+      setTimeout(() => process.exit(1), 10000).unref();
+    };
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
+    process.once('SIGINT', () => shutdown('SIGINT'));
+  })
+  .catch((error) => {
+    console.error('Application startup failed; refusing unsafe file-mode fallback:', error);
+    if (postgresPool) postgresPool.end().finally(() => process.exit(1));
+    else process.exit(1);
   });
-});
