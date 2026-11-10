@@ -137,6 +137,9 @@ function isColleagueWritePath(pathName: string, method: string): boolean {
 // Protect all write/admin APIs even when the browser UI is bypassed or scripted.
 app.use('/api', (req, res, next) => {
   const pathName = req.path;
+  const session = readAuthSession(req);
+  res.locals.authRole = session?.role || (!isProd && !isAuthConfigured() ? 'admin' : 'guest');
+
   if (
     pathName.startsWith('/auth/') ||
     pathName === '/health' ||
@@ -157,7 +160,6 @@ app.use('/api', (req, res, next) => {
     });
   }
 
-  const session = readAuthSession(req);
   if (isAdminApiPath(pathName, req.method)) {
     if (!session) return res.status(401).json({ success: false, error: 'برای این عملیات باید وارد حساب مدیر شوید.' });
     if (session.role !== 'admin') return res.status(403).json({ success: false, error: 'این عملیات فقط برای مدیر مجاز است.' });
@@ -870,12 +872,17 @@ function pruneOldServerListings(listings: any[]) {
 const sseClients = new Set<express.Response>();
 
 function broadcastSyncEvent(eventType = 'update', extraData: Record<string, any> = {}) {
+  const safeExtraData = { ...extraData };
+  if (safeExtraData.listing && typeof safeExtraData.listing === 'object') {
+    const { phoneNumber: _phoneNumber, imageFileName: _imageFileName, mediaId: _mediaId, ...publicListing } = safeExtraData.listing;
+    safeExtraData.listing = publicListing;
+  }
   const payload = JSON.stringify({
     type: eventType,
     lastUpdated: memoryDb.lastUpdated,
     hiddenBatches: memoryDb.hiddenBatches || [],
     totalListings: memoryDb.listings.length,
-    ...extraData,
+    ...safeExtraData,
   });
   const sseMsg = `data: ${payload}\n\n`;
 
@@ -1146,14 +1153,27 @@ app.get('/api/listings', (req, res) => {
       };
     });
 
+    const isAuthorizedViewer = res.locals.authRole === 'admin' || res.locals.authRole === 'colleague';
+    const clientListings = isAuthorizedViewer
+      ? returnedListings
+      : returnedListings.map((item) => {
+          const {
+            phoneNumber: _phoneNumber,
+            imageFileName: _imageFileName,
+            mediaId: _mediaId,
+            ...publicItem
+          } = item;
+          return { ...publicItem, phoneNumber: '' };
+        });
+
     res.json({
       success: true,
       lastUpdated: memoryDb.lastUpdated,
       publishedBy: memoryDb.publishedBy,
-      total: returnedListings.length,
+      total: clientListings.length,
       totalAllBatches: activeListings.length,
       hiddenBatches: Array.from(hiddenSet),
-      listings: returnedListings,
+      listings: clientListings,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
