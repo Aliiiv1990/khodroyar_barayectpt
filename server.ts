@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import JSZip from 'jszip';
+import { Pool, type PoolClient } from 'pg';
 import {
   parseZipArchive,
   parseSessionJson,
@@ -210,14 +211,386 @@ function readDatabaseFromDisk(): DatabasePayload {
   };
 }
 
-// In-memory primary store for zero-latency responses without blocking event loop
+// PostgreSQL is the shared source of truth when PG_URI (Liara) or DATABASE_URL is configured.
+// Without either variable, the existing persistent JSON-file mode remains available for local development.
 let memoryDb: DatabasePayload = readDatabaseFromDisk();
 let diskSaveTimeout: NodeJS.Timeout | null = null;
 let isWritingToDisk = false;
 let pendingDiskSave = false;
+let postgresDirty = false;
 
-// Asynchronous, debounced disk saver that never blocks the Node.js event loop
+const pgConnectionString = process.env.PG_URI || process.env.DATABASE_URL || '';
+const postgresPool: Pool | null = pgConnectionString
+  ? new Pool({
+      connectionString: pgConnectionString,
+      max: Math.max(2, Math.min(10, Number(process.env.PG_POOL_MAX) || 5)),
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+      statement_timeout: 60000,
+      application_name: 'khodroyar-car-exhibition',
+    })
+  : null;
+
+const POSTGRES_ADVISORY_LOCK_KEY = '7319042202611';
+
+function normalizeDatabasePayload(payload: any): DatabasePayload {
+  if (Array.isArray(payload)) {
+    return {
+      revision: 1,
+      lastUpdated: new Date().toISOString(),
+      publishedBy: 'سامانه',
+      hiddenBatches: [],
+      listings: payload,
+      tombstones: [],
+      confirmedBatches: {},
+    };
+  }
+  return {
+    revision: typeof payload?.revision === 'number' ? payload.revision : 1,
+    lastUpdated: payload?.lastUpdated || new Date().toISOString(),
+    publishedBy: payload?.publishedBy || 'مدیر سیستم',
+    hiddenBatches: Array.isArray(payload?.hiddenBatches) ? payload.hiddenBatches : [],
+    listings: Array.isArray(payload?.listings) ? payload.listings : [],
+    tombstones: Array.isArray(payload?.tombstones) ? payload.tombstones : [],
+    confirmedBatches:
+      payload?.confirmedBatches && typeof payload.confirmedBatches === 'object'
+        ? payload.confirmedBatches
+        : {},
+  };
+}
+
+function safeImageStorageId(value: unknown): string {
+  const id = String(value ?? '').trim();
+  return id.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180) || 'unknown-image';
+}
+
+function parseImageDataUrl(value: unknown): { buffer: Buffer; mimeType: string; extension: string } | null {
+  if (typeof value !== 'string' || !value.startsWith('data:image/')) return null;
+
+  const base64Match = value.match(/^data:(image\/[a-zA-Z0-9.+-]+)(?:;charset=[^;,]+)?;base64,([\s\S]+)$/i);
+  if (base64Match) {
+    const mimeType = base64Match[1].toLowerCase();
+    const extension =
+      mimeType === 'image/jpeg' ? 'jpg' :
+      mimeType === 'image/svg+xml' ? 'svg' :
+      mimeType.split('/')[1].replace('jpeg', 'jpg');
+    const buffer = Buffer.from(base64Match[2].replace(/\s+/g, ''), 'base64');
+    return buffer.length ? { buffer, mimeType, extension } : null;
+  }
+
+  const svgMatch = value.match(/^data:image\/svg\+xml(?:;charset=[^;,]+)?,([\s\S]+)$/i);
+  if (svgMatch) {
+    try {
+      const svg = decodeURIComponent(svgMatch[1]);
+      return { buffer: Buffer.from(svg, 'utf8'), mimeType: 'image/svg+xml', extension: 'svg' };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function persistImageVariantToDisk(
+  listingId: unknown,
+  variant: 'thumb' | 'full',
+  dataUrl: unknown
+): Promise<boolean> {
+  const parsed = parseImageDataUrl(dataUrl);
+  if (!parsed) return false;
+
+  const safeId = safeImageStorageId(listingId);
+  const imagesDir = getImagesDir();
+  await fs.promises.mkdir(imagesDir, { recursive: true });
+  const fileName = `${safeId}.${variant}.${parsed.extension}`;
+  const targetPath = path.join(imagesDir, fileName);
+  await fs.promises.writeFile(targetPath, parsed.buffer);
+  diskImageSet.add(fileName);
+  diskImageSet.add(fileName.replace(/\.[^/.]+$/, ''));
+  return true;
+}
+
+async function prepareListingsForPostgres(listings: any[]): Promise<any[]> {
+  const prepared: any[] = [];
+  for (const source of listings) {
+    const listing = { ...source };
+    const thumb = listing.imageThumbnailBase64 || '';
+    const full = listing.imageFullBase64 || '';
+    const thumbStored = thumb ? await persistImageVariantToDisk(listing.id, 'thumb', thumb) : false;
+    const fullStored = full ? await persistImageVariantToDisk(listing.id, 'full', full) : false;
+
+    // Raster data URLs are stored on /data, not as huge base64 strings in PostgreSQL.
+    // Small SVG placeholders remain inline so an image fallback is still available if needed.
+    if (thumbStored && !String(thumb).startsWith('data:image/svg+xml')) listing.imageThumbnailBase64 = '';
+    if (fullStored && !String(full).startsWith('data:image/svg+xml')) listing.imageFullBase64 = '';
+    if (thumbStored || fullStored) listing.hasPhoto = true;
+    prepared.push(listing);
+  }
+  return prepared;
+}
+
+async function loadPostgresSnapshot(client: PoolClient): Promise<void> {
+  const stateResult = await client.query(
+    'SELECT revision, last_updated, published_by, hidden_batches, tombstones, confirmed_batches FROM car_app_state WHERE id = 1'
+  );
+  const state = stateResult.rows[0];
+  if (!state) {
+    throw new Error('PostgreSQL application state row is missing.');
+  }
+
+  const listingResult = await client.query(
+    'SELECT data FROM car_listings ORDER BY created_at DESC NULLS LAST, id ASC'
+  );
+
+  memoryDb = {
+    revision: Number(state.revision) || 1,
+    lastUpdated: state.last_updated || new Date().toISOString(),
+    publishedBy: state.published_by || 'مدیر سیستم',
+    hiddenBatches: Array.isArray(state.hidden_batches) ? state.hidden_batches : [],
+    listings: listingResult.rows.map((row: any) => row.data),
+    tombstones: Array.isArray(state.tombstones) ? state.tombstones : [],
+    confirmedBatches:
+      state.confirmed_batches && typeof state.confirmed_batches === 'object'
+        ? state.confirmed_batches
+        : {},
+  };
+}
+
+async function persistPostgresSnapshot(client: PoolClient): Promise<void> {
+  const preparedListings = await prepareListingsForPostgres(memoryDb.listings);
+  const seenIds = new Set<string>();
+  const rows = preparedListings.map((item) => {
+    const id = String(item?.id ?? '').trim();
+    if (!id) throw new Error('ذخیره‌سازی متوقف شد: یک آگهی شناسه خالی دارد.');
+    if (seenIds.has(id)) throw new Error(`ذخیره‌سازی متوقف شد: شناسه تکراری ${id} در فهرست وجود دارد.`);
+    seenIds.add(id);
+
+    const createdAtValue = item.createdAt ? new Date(item.createdAt) : null;
+    const createdAt =
+      createdAtValue && !Number.isNaN(createdAtValue.getTime())
+        ? createdAtValue.toISOString()
+        : null;
+
+    return {
+      id,
+      batch_name: String(item.importBatchName || ''),
+      listing_type: String(item.type || 'sale'),
+      created_at: createdAt,
+      data: item,
+    };
+  });
+
+  await client.query('BEGIN');
+  try {
+    const ids = rows.map((item) => item.id);
+    await client.query(
+      'DELETE FROM car_listings WHERE NOT (id = ANY($1::text[]))',
+      [ids]
+    );
+
+    const chunkSize = 500;
+    for (let offset = 0; offset < rows.length; offset += chunkSize) {
+      const chunk = rows.slice(offset, offset + chunkSize);
+      await client.query(
+        `INSERT INTO car_listings (id, batch_name, listing_type, created_at, data)
+         SELECT
+           x.id,
+           COALESCE(x.batch_name, ''),
+           COALESCE(x.listing_type, 'sale'),
+           NULLIF(x.created_at, '')::timestamptz,
+           x.data
+         FROM jsonb_to_recordset($1::jsonb) AS x(
+           id text,
+           batch_name text,
+           listing_type text,
+           created_at text,
+           data jsonb
+         )
+         ON CONFLICT (id) DO UPDATE SET
+           batch_name = EXCLUDED.batch_name,
+           listing_type = EXCLUDED.listing_type,
+           created_at = EXCLUDED.created_at,
+           data = EXCLUDED.data
+         WHERE car_listings.data IS DISTINCT FROM EXCLUDED.data
+            OR car_listings.batch_name IS DISTINCT FROM EXCLUDED.batch_name
+            OR car_listings.listing_type IS DISTINCT FROM EXCLUDED.listing_type
+            OR car_listings.created_at IS DISTINCT FROM EXCLUDED.created_at`,
+        [JSON.stringify(chunk)]
+      );
+    }
+
+    await client.query(
+      `INSERT INTO car_app_state (
+         id, revision, last_updated, published_by, hidden_batches, tombstones, confirmed_batches, updated_at
+       ) VALUES (1, $1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         revision = EXCLUDED.revision,
+         last_updated = EXCLUDED.last_updated,
+         published_by = EXCLUDED.published_by,
+         hidden_batches = EXCLUDED.hidden_batches,
+         tombstones = EXCLUDED.tombstones,
+         confirmed_batches = EXCLUDED.confirmed_batches,
+         updated_at = NOW()`,
+      [
+        memoryDb.revision || 1,
+        memoryDb.lastUpdated || new Date().toISOString(),
+        memoryDb.publishedBy || 'مدیر سیستم',
+        JSON.stringify(memoryDb.hiddenBatches || []),
+        JSON.stringify(memoryDb.tombstones || []),
+        JSON.stringify(memoryDb.confirmedBatches || {}),
+      ]
+    );
+    await client.query('COMMIT');
+
+    // Keep the active process lean as well as the persistent DB.
+    memoryDb.listings = preparedListings;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  }
+}
+
+async function initializePostgresStore(): Promise<void> {
+  if (!postgresPool) {
+    console.log('Database backend: persistent JSON file (PG_URI / DATABASE_URL not configured)');
+    return;
+  }
+
+  const client = await postgresPool.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock($1::bigint)', [POSTGRES_ADVISORY_LOCK_KEY]);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS car_app_state (
+        id SMALLINT PRIMARY KEY CHECK (id = 1),
+        revision BIGINT NOT NULL DEFAULT 1,
+        last_updated TEXT NOT NULL,
+        published_by TEXT NOT NULL DEFAULT 'مدیر سیستم',
+        hidden_batches JSONB NOT NULL DEFAULT '[]'::jsonb,
+        tombstones JSONB NOT NULL DEFAULT '[]'::jsonb,
+        confirmed_batches JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS car_listings (
+        id TEXT PRIMARY KEY,
+        batch_name TEXT NOT NULL DEFAULT '',
+        listing_type TEXT NOT NULL DEFAULT 'sale',
+        created_at TIMESTAMPTZ,
+        data JSONB NOT NULL
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS car_listings_batch_idx ON car_listings (batch_name)');
+    await client.query('CREATE INDEX IF NOT EXISTS car_listings_type_created_idx ON car_listings (listing_type, created_at DESC)');
+
+    const existingState = await client.query('SELECT id FROM car_app_state WHERE id = 1');
+    if (existingState.rowCount === 0) {
+      const legacyPath = getDbFilePath();
+      if (fs.existsSync(legacyPath)) {
+        // Validate the legacy file before making a backup or inserting anything.
+        const rawLegacy = await fs.promises.readFile(legacyPath, 'utf8');
+        const parsedLegacy = JSON.parse(rawLegacy);
+        if (!Array.isArray(parsedLegacy) && !Array.isArray(parsedLegacy?.listings)) {
+          throw new Error('فایل دیتابیس قدیمی ساختار معتبری ندارد؛ مهاجرت PostgreSQL برای جلوگیری از از دست رفتن داده متوقف شد.');
+        }
+
+        const backupPath = `${legacyPath}.pre-postgres-${new Date().toISOString().replace(/[:.]/g, '-')}.bak`;
+        await fs.promises.copyFile(legacyPath, backupPath);
+        console.log(`Legacy database backup created: ${backupPath}`);
+        memoryDb = normalizeDatabasePayload(parsedLegacy);
+      }
+
+      await persistPostgresSnapshot(client);
+      postgresDirty = false;
+      console.log(`Legacy database imported into PostgreSQL: ${memoryDb.listings.length} listings`);
+    } else {
+      await loadPostgresSnapshot(client);
+    }
+
+    refreshDiskImageSet();
+    console.log(`Database backend: PostgreSQL (${memoryDb.listings.length} listings)`);
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1::bigint)', [POSTGRES_ADVISORY_LOCK_KEY]).catch(() => undefined);
+    client.release();
+  }
+}
+
+// Serialize stateful API requests across all app instances. Each request reads the
+// current committed snapshot; mutations are persisted transactionally before the
+// HTTP response is sent. Long-lived SSE and image requests do not hold this lock.
+app.use('/api', async (req, res, next) => {
+  if (
+    !postgresPool ||
+    req.path === '/live-sync' ||
+    req.path.startsWith('/images/') ||
+    req.path === '/export/liara-zip'
+  ) {
+    return next();
+  }
+
+  let client: PoolClient | null = null;
+  let released = false;
+  const releaseClient = async () => {
+    if (!client || released) return;
+    released = true;
+    try {
+      await client.query('SELECT pg_advisory_unlock($1::bigint)', [POSTGRES_ADVISORY_LOCK_KEY]);
+    } catch (error) {
+      console.warn('Could not release PostgreSQL request lock cleanly:', error);
+    } finally {
+      client.release();
+    }
+  };
+
+  try {
+    client = await postgresPool.connect();
+    await client.query('SELECT pg_advisory_lock($1::bigint)', [POSTGRES_ADVISORY_LOCK_KEY]);
+    await loadPostgresSnapshot(client);
+
+    res.once('finish', () => { void releaseClient(); });
+    res.once('close', () => { void releaseClient(); });
+
+    const originalSend = res.send.bind(res);
+    let sendStarted = false;
+    (res as any).send = (body?: any) => {
+      if (sendStarted) return res;
+      if (!postgresDirty) return originalSend(body);
+
+      sendStarted = true;
+      void persistPostgresSnapshot(client as PoolClient)
+        .then(() => {
+          postgresDirty = false;
+          originalSend(body);
+        })
+        .catch((error) => {
+          console.error('PostgreSQL transaction failed; refusing to acknowledge the write:', error);
+          res.statusCode = 503;
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          originalSend(JSON.stringify({
+            success: false,
+            error: 'ذخیره‌سازی پایدار در PostgreSQL ناموفق بود؛ تغییرات تأیید نشد. اتصال دیتابیس و دیسک تصاویر را بررسی کنید.',
+          }));
+        });
+      return res;
+    };
+
+    next();
+  } catch (error) {
+    console.error('PostgreSQL request middleware failed:', error);
+    if (client && !released) await releaseClient();
+    res.status(503).json({
+      success: false,
+      error: 'اتصال یا خواندن PostgreSQL ناموفق است؛ برای جلوگیری از اختلاف داده‌ها، درخواست انجام نشد.',
+    });
+  }
+});
+
+// Asynchronous, debounced file saver for local mode. PostgreSQL writes are flushed
+// transactionally by the API middleware immediately before sending the response.
 function queueDiskSave() {
+  if (postgresPool) {
+    postgresDirty = true;
+    return;
+  }
   if (diskSaveTimeout) clearTimeout(diskSaveTimeout);
   diskSaveTimeout = setTimeout(async () => {
     if (isWritingToDisk) {
