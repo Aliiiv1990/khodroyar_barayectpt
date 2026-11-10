@@ -7,5 +7,8 @@
       "name": "data",
       "mountTo": "/data"
     }
-  ]
+  ],
+  "node": {
+    "version": "22"
+  }
 }
