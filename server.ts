@@ -51,8 +51,8 @@ const AUTH_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const loginAttempts = new Map<string, { windowStartedAt: number; count: number; blockedUntil: number }>();
 
 function isAuthConfigured(): boolean {
-  return /^\\d{4}$/.test(ADMIN_PIN) &&
-    /^\\d{4}$/.test(COLLEAGUE_PIN) &&
+  return /^\d{4}$/.test(ADMIN_PIN) &&
+    /^\d{4}$/.test(COLLEAGUE_PIN) &&
     ADMIN_PIN !== COLLEAGUE_PIN &&
     SESSION_SECRET.length >= 32;
 }
