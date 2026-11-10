@@ -334,6 +334,13 @@ export async function publishListingsToLiara(
             if (!fullBatchResp.ok) {
               throw new Error(`خطای سرور (${resp.status})`);
             }
+          } else {
+            const imageResult = await resp.json();
+            if (!imageResult?.success || Number(imageResult.updated) !== batchSlice.length) {
+              throw new Error(
+                `ذخیره تصویر ناقص بود: ${Number(imageResult?.updated) || 0} از ${batchSlice.length} تصویر به رکوردها متصل شد.`
+              );
+            }
           }
 
           batchSuccess = true;
