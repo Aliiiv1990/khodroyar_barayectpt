@@ -1556,13 +1556,16 @@ app.post('/api/admin/sync-images', (req, res) => {
         if (dataToSave && dataToSave.includes(';base64,')) {
           try {
             const buf = Buffer.from(dataToSave.split(';base64,')[1], 'base64');
-            fs.promises.writeFile(path.join(imagesDir, `${item.id}.jpg`), buf).catch(() => {});
+            const listingImagePath = safeImagePath(imagesDir, `${safeImageStorageId(item.id)}.jpg`);
+            if (listingImagePath) fs.promises.writeFile(listingImagePath, buf).catch(() => {});
             if (item.imageFileName && !item.imageFileName.toLowerCase().endsWith('.txt')) {
-              const baseName = item.imageFileName.split('/').pop() || item.imageFileName;
-              fs.promises.writeFile(path.join(imagesDir, baseName), buf).catch(() => {});
+              const baseName = path.basename(String(item.imageFileName).replace(/\\/g, '/'));
+              const namedImagePath = safeImagePath(imagesDir, baseName);
+              if (namedImagePath) fs.promises.writeFile(namedImagePath, buf).catch(() => {});
             }
             if (item.mediaId) {
-              fs.promises.writeFile(path.join(imagesDir, `${item.mediaId}.jpg`), buf).catch(() => {});
+              const mediaImagePath = safeImagePath(imagesDir, `${safeImageStorageId(item.mediaId)}.jpg`);
+              if (mediaImagePath) fs.promises.writeFile(mediaImagePath, buf).catch(() => {});
             }
           } catch {}
         }
