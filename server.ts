@@ -1116,10 +1116,13 @@ app.get('/api/images/:id', (req, res) => {
           const mimeType = match[1];
           const buffer = Buffer.from(match[2], 'base64');
           // Asynchronously persist buffer to disk so subsequent reads hit the filesystem directly
-          fs.promises.writeFile(path.join(imagesDir, `${found.id}.jpg`), buffer).then(() => {
-            diskImageSet.add(String(found.id));
-            diskImageSet.add(`${found.id}.jpg`);
-          }).catch(() => {});
+          const fallbackImagePath = safeImagePath(imagesDir, `${safeImageStorageId(found.id)}.jpg`);
+          if (fallbackImagePath) {
+            fs.promises.writeFile(fallbackImagePath, buffer).then(() => {
+              diskImageSet.add(String(found.id));
+              diskImageSet.add(`${safeImageStorageId(found.id)}.jpg`);
+            }).catch(() => {});
+          }
 
           res.setHeader('Content-Type', mimeType);
           res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
@@ -1766,22 +1769,29 @@ async function extractZipDirectlyToDisk(
       const hasImageMagic = isJpeg || isPng || isGif || isWebp || isBmp;
 
       if (hasImageMagic) {
-        // Direct binary image: save to persistent disk!
+        // Direct binary image: save to persistent disk using safe path components.
         const ext = isPng ? '.png' : isWebp ? '.webp' : isGif ? '.gif' : '.jpg';
-        await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}${ext}`), nodeBuffer);
-        await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}.jpg`), nodeBuffer);
-        if (baseName !== idWithoutExt) {
-          await fs.promises.writeFile(path.join(imagesDir, baseName), nodeBuffer);
+        const safeEntryId = safeImageStorageId(idWithoutExt);
+        const primaryImagePath = safeImagePath(imagesDir, `${safeEntryId}${ext}`);
+        const legacyJpegPath = safeImagePath(imagesDir, `${safeEntryId}.jpg`);
+        if (primaryImagePath) await fs.promises.writeFile(primaryImagePath, nodeBuffer);
+        if (legacyJpegPath) await fs.promises.writeFile(legacyJpegPath, nodeBuffer);
+
+        const safeBaseName = path.basename(String(baseName).replace(/\\/g, '/'));
+        const namedImagePath = safeImagePath(imagesDir, safeBaseName);
+        if (baseName !== idWithoutExt && namedImagePath) {
+          await fs.promises.writeFile(namedImagePath, nodeBuffer);
         }
         const mappedFName = idToFileName.get(idWithoutExt) || idToFileName.get(baseName);
         if (mappedFName && mappedFName !== baseName) {
-          await fs.promises.writeFile(path.join(imagesDir, mappedFName), nodeBuffer);
+          const mappedImagePath = safeImagePath(imagesDir, path.basename(String(mappedFName).replace(/\\/g, '/')));
+          if (mappedImagePath) await fs.promises.writeFile(mappedImagePath, nodeBuffer);
         }
 
         diskImageSet.add(idWithoutExt);
-        diskImageSet.add(`${idWithoutExt}.jpg`);
-        diskImageSet.add(baseName);
-        if (mappedFName) diskImageSet.add(mappedFName);
+        diskImageSet.add(`${safeEntryId}.jpg`);
+        diskImageSet.add(safeBaseName);
+        if (mappedFName) diskImageSet.add(path.basename(String(mappedFName).replace(/\\/g, '/')));
         savedImagesCount++;
         continue;
       }
@@ -1797,20 +1807,26 @@ async function extractZipDirectlyToDisk(
           const match = rawStr.match(/^data:([^;]+);base64,(.+)$/);
           if (match) {
             const buf = Buffer.from(match[2], 'base64');
-            await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}.jpg`), buf);
-            await fs.promises.writeFile(path.join(imagesDir, baseName), buf);
+            const safeEntryId = safeImageStorageId(idWithoutExt);
+            const idImagePath = safeImagePath(imagesDir, `${safeEntryId}.jpg`);
+            const namedImagePath = safeImagePath(imagesDir, path.basename(String(baseName).replace(/\\/g, '/')));
+            if (idImagePath) await fs.promises.writeFile(idImagePath, buf);
+            if (namedImagePath) await fs.promises.writeFile(namedImagePath, buf);
             diskImageSet.add(idWithoutExt);
-            diskImageSet.add(`${idWithoutExt}.jpg`);
+            diskImageSet.add(`${safeEntryId}.jpg`);
             diskImageSet.add(baseName);
             savedImagesCount++;
             continue;
           }
         } else if (rawStr.startsWith('/9j/') || rawStr.startsWith('iVBORw0KGgo') || rawStr.startsWith('UklGR')) {
           const buf = Buffer.from(rawStr.replace(/\s+/g, ''), 'base64');
-          await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}.jpg`), buf);
-          await fs.promises.writeFile(path.join(imagesDir, baseName), buf);
+          const safeEntryId = safeImageStorageId(idWithoutExt);
+          const idImagePath = safeImagePath(imagesDir, `${safeEntryId}.jpg`);
+          const namedImagePath = safeImagePath(imagesDir, path.basename(String(baseName).replace(/\\/g, '/')));
+          if (idImagePath) await fs.promises.writeFile(idImagePath, buf);
+          if (namedImagePath) await fs.promises.writeFile(namedImagePath, buf);
           diskImageSet.add(idWithoutExt);
-          diskImageSet.add(`${idWithoutExt}.jpg`);
+          diskImageSet.add(`${safeEntryId}.jpg`);
           diskImageSet.add(baseName);
           savedImagesCount++;
           continue;
