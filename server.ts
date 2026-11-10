@@ -45,9 +45,13 @@ interface AuthSessionPayload {
   expiresAt: number;
   nonce: string;
 }
-const ADMIN_PIN = String(process.env.ADMIN_PIN || '').trim();
-const COLLEAGUE_PIN = String(process.env.COLLEAGUE_PIN || '').trim();
-const SESSION_SECRET = String(process.env.SESSION_SECRET || '');
+// Development-only defaults preserve the local preview workflow. Production
+// never has defaults: startup fails until the operator supplies private secrets.
+const ADMIN_PIN = String(process.env.ADMIN_PIN || (!isProd ? '8888' : '')).trim();
+const COLLEAGUE_PIN = String(process.env.COLLEAGUE_PIN || (!isProd ? '1234' : '')).trim();
+const SESSION_SECRET = String(
+  process.env.SESSION_SECRET || (!isProd ? 'local-development-session-secret-do-not-use-in-production' : '')
+);
 const AUTH_COOKIE_NAME = 'khodroyar_session';
 const AUTH_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const loginAttempts = new Map<string, { windowStartedAt: number; count: number; blockedUntil: number }>();
