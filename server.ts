@@ -945,6 +945,9 @@ async function extractZipDirectlyToDisk(
   batchCount: number;
   sellersCount: number;
   buyersCount: number;
+  sourceRecordsCount: number;
+  skippedRecordsCount: number;
+  errorsCount: number;
   extractedImagesCount: number;
   batchName: string;
   revision: number;
