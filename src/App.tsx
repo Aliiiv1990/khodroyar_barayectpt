@@ -51,20 +51,9 @@ const DEFAULT_FILTERS: FilterOptions = {
 
 export default function App() {
   // Load listings with persistence: if user cleared the data, keep it empty!
-  const [listings, setListings] = useState<CarListing[]>(() => {
-    if (typeof window !== 'undefined' && isStorageExplicitlyCleared()) {
-      return [];
-    }
-    // If first-time visitor ever, provide the initial 5,000 demo listings
-    if (typeof window !== 'undefined' && !hasUserVisitedBefore()) {
-      const raw = generateRealisticCarListings(5000);
-      const { prunedListings } = pruneOldListings(raw);
-      markUserVisited();
-      saveListingsToIndexedDB(prunedListings);
-      return prunedListings;
-    }
-    return [];
-  });
+  // Start from an empty in-memory list and hydrate the local cache first.
+  // Production devices must never invent a local demo catalogue: the API is authoritative.
+  const [listings, setListings] = useState<CarListing[]>([]);
 
   // Filter state
   const [filters, setFilters] = useState<FilterOptions>(DEFAULT_FILTERS);
@@ -237,7 +226,7 @@ export default function App() {
       try {
         // Step 2a: Ultra-fast initial paint in < 300ms using fast metadata format
         const fastListings = await fetchListingsFromLiara(10000, true);
-        if (fastListings && fastListings.length > 0 && isMounted) {
+        if (fastListings !== null && isMounted) {
           const { prunedListings } = pruneOldListings(fastListings);
           setListings(prunedListings);
           setStorageExplicitlyCleared(false);
@@ -248,7 +237,7 @@ export default function App() {
 
         // Step 2b: Full background sync for offline IndexedDB persistence
         const liaraListings = await fetchListingsFromLiara(25000, false);
-        if (liaraListings && liaraListings.length > 0 && isMounted) {
+        if (liaraListings !== null && isMounted) {
           const { prunedListings } = pruneOldListings(liaraListings);
           setListings(prunedListings);
           setStorageExplicitlyCleared(false);
@@ -258,7 +247,7 @@ export default function App() {
           setLastSyncTime(new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }));
           return true;
         }
-        return Boolean(fastListings && fastListings.length > 0);
+        return fastListings !== null;
       } catch (err) {
         console.warn('Could not sync with Liara server:', err);
         if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -268,15 +257,7 @@ export default function App() {
       return false;
     };
 
-    syncWithLiara().then((synced) => {
-      if (!synced && isMounted && !hasUserVisitedBefore() && !isStorageExplicitlyCleared()) {
-        const raw = generateRealisticCarListings(5000);
-        const { prunedListings } = pruneOldListings(raw);
-        setListings(prunedListings);
-        markUserVisited();
-        saveListingsToIndexedDB(prunedListings);
-      }
-    });
+    void syncWithLiara();
 
     // Step 3: Real-time Live Synchronization across Mobile & Laptop (SSE)
     let eventSource: EventSource | null = null;
@@ -367,9 +348,6 @@ export default function App() {
       try {
         const cars = await fetchListingsFromLiara(25000);
         if (cars && isMounted) {
-          if (cars.length === 0 && !allowEmpty) {
-            return;
-          }
           const { prunedListings } = pruneOldListings(cars);
           setListings((prev) => {
             if (replaceAll) {
