@@ -18,6 +18,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+// Liara runs behind a trusted reverse proxy; use the client IP for login throttling.
+app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT) || 3000;
 const isProd = process.env.NODE_ENV === 'production' || fs.existsSync(path.resolve(__dirname, 'dist', 'index.html'));
 
@@ -511,13 +513,20 @@ async function prepareListingsForPostgres(listings: any[]): Promise<any[]> {
     const listing = { ...source };
     const thumb = listing.imageThumbnailBase64 || '';
     const full = listing.imageFullBase64 || '';
+    const sameImageVariant = Boolean(thumb && full && thumb === full);
     const thumbStored = thumb ? await persistImageVariantToDisk(listing.id, 'thumb', thumb) : false;
-    const fullStored = full ? await persistImageVariantToDisk(listing.id, 'full', full) : false;
+    const fullStored = full && !sameImageVariant
+      ? await persistImageVariantToDisk(listing.id, 'full', full)
+      : false;
 
     // Raster data URLs are stored on /data, not as huge base64 strings in PostgreSQL.
-    // Small SVG placeholders remain inline so an image fallback is still available if needed.
+    // If the thumbnail and full image are identical, store only one disk copy; the
+    // image route falls back to the stored variant for either requested size.
+    // Small SVG placeholders remain inline so a vector fallback is always available.
     if (thumbStored && !String(thumb).startsWith('data:image/svg+xml')) listing.imageThumbnailBase64 = '';
-    if (fullStored && !String(full).startsWith('data:image/svg+xml')) listing.imageFullBase64 = '';
+    if ((fullStored || (sameImageVariant && thumbStored)) && !String(full).startsWith('data:image/svg+xml')) {
+      listing.imageFullBase64 = '';
+    }
     if (thumbStored || fullStored) listing.hasPhoto = true;
     prepared.push(listing);
   }
@@ -706,6 +715,12 @@ async function initializePostgresStore(): Promise<void> {
 
     const existingState = await client.query('SELECT id FROM car_app_state WHERE id = 1');
     if (existingState.rowCount === 0) {
+      const existingListingRows = await client.query('SELECT COUNT(*)::bigint AS total FROM car_listings');
+      if (Number(existingListingRows.rows[0]?.total || 0) > 0) {
+        throw new Error(
+          'جدول car_listings در PostgreSQL از قبل داده دارد اما سطر وضعیت برنامه موجود نیست؛ برای جلوگیری از بازنویسی داده‌های موجود، مهاجرت خودکار متوقف شد.'
+        );
+      }
       const legacyPath = getDbFilePath();
       if (fs.existsSync(legacyPath)) {
         // Validate the legacy file before making a backup or inserting anything.
@@ -1000,8 +1015,10 @@ app.get('/api/images/:id', (req, res) => {
     const safeTargetId = safeImageStorageId(targetId);
     const candidates: string[] = [
       // Preferred PostgreSQL-mode image variants stored outside JSON in /data/images.
-      ...['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'bmp', 'avif'].map((ext) =>
-        path.join(imagesDir, `${safeTargetId}.${isFull ? 'full' : 'thumb'}.${ext}`)
+      ...['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'bmp', 'avif'].flatMap((ext) =>
+        (isFull ? ['full', 'thumb'] : ['thumb', 'full']).map((variant) =>
+          path.join(imagesDir, `${safeTargetId}.${variant}.${ext}`)
+        )
       ),
       // Legacy ZIP/direct-upload image paths remain readable for existing deployments.
       path.join(imagesDir, `${targetId}.jpg`),
