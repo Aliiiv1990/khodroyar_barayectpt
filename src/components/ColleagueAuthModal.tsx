@@ -84,7 +84,7 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
   const handleDigitInput = useCallback(
     (rawDigit: string) => {
       const digit = toEnglishDigits(rawDigit);
-      if (isChecking || !/^\\d$/.test(digit)) return;
+      if (isChecking || !/^\d$/.test(digit)) return;
 
       setPin((prev) => {
         if (prev.length >= 4) return prev;
