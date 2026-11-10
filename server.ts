@@ -1,4 +1,5 @@
 import express from 'express';
+import { createHash, createHmac, timingSafeEqual, randomBytes } from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -33,6 +34,198 @@ app.use((req, res, next) => {
     return res.sendStatus(200);
   }
   next();
+});
+
+// Server-verified PIN authentication. No PIN or session signing key is shipped to the browser.
+type AuthRole = 'admin' | 'colleague';
+interface AuthSessionPayload {
+  role: AuthRole;
+  expiresAt: number;
+  nonce: string;
+}
+const ADMIN_PIN = String(process.env.ADMIN_PIN || '').trim();
+const COLLEAGUE_PIN = String(process.env.COLLEAGUE_PIN || '').trim();
+const SESSION_SECRET = String(process.env.SESSION_SECRET || '');
+const AUTH_COOKIE_NAME = 'khodroyar_session';
+const AUTH_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const loginAttempts = new Map<string, { windowStartedAt: number; count: number; blockedUntil: number }>();
+
+function isAuthConfigured(): boolean {
+  return /^\\d{4}$/.test(ADMIN_PIN) &&
+    /^\\d{4}$/.test(COLLEAGUE_PIN) &&
+    ADMIN_PIN !== COLLEAGUE_PIN &&
+    SESSION_SECRET.length >= 32;
+}
+
+function constantTimePinMatch(candidate: string, expected: string): boolean {
+  const candidateDigest = createHash('sha256').update(candidate).digest();
+  const expectedDigest = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(candidateDigest, expectedDigest);
+}
+
+function readCookie(req: express.Request, cookieName: string): string {
+  const cookieHeader = String(req.headers.cookie || '');
+  for (const part of cookieHeader.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() === cookieName) {
+      return part.slice(separator + 1).trim();
+    }
+  }
+  return '';
+}
+
+function createAuthToken(role: AuthRole): string {
+  const payload: AuthSessionPayload = {
+    role,
+    expiresAt: Date.now() + AUTH_SESSION_TTL_MS,
+    nonce: randomBytes(12).toString('hex'),
+  };
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = createHmac('sha256', SESSION_SECRET).update(encodedPayload).digest('base64url');
+  return `${encodedPayload}.${signature}`;
+}
+
+function readAuthSession(req: express.Request): AuthSessionPayload | null {
+  if (!isAuthConfigured()) return null;
+  const token = readCookie(req, AUTH_COOKIE_NAME);
+  const [encodedPayload, signature] = token.split('.');
+  if (!encodedPayload || !signature) return null;
+
+  const expectedSignature = createHmac('sha256', SESSION_SECRET).update(encodedPayload).digest('base64url');
+  const received = Buffer.from(signature);
+  const expected = Buffer.from(expectedSignature);
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
+
+  try {
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as AuthSessionPayload;
+    if (
+      (payload.role !== 'admin' && payload.role !== 'colleague') ||
+      !Number.isFinite(payload.expiresAt) ||
+      payload.expiresAt <= Date.now()
+    ) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function setAuthCookie(res: express.Response, token: string, maxAgeSeconds: number): void {
+  const secureFlag = isProd ? '; Secure' : '';
+  res.setHeader(
+    'Set-Cookie',
+    `${AUTH_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureFlag}`
+  );
+}
+
+function isAdminApiPath(pathName: string, method: string): boolean {
+  if (pathName === '/export' || pathName === '/export/liara-zip') return true;
+  if (pathName.startsWith('/admin/')) return true;
+  if (pathName.startsWith('/listings/') && method === 'DELETE') return true;
+  return false;
+}
+
+function isColleagueWritePath(pathName: string, method: string): boolean {
+  if (pathName === '/listings' && method === 'POST') return true;
+  if (pathName.startsWith('/listings/') && method === 'PUT') return true;
+  if (pathName === '/listings/update' && method === 'POST') return true;
+  return false;
+}
+
+// Protect all write/admin APIs even when the browser UI is bypassed or scripted.
+app.use('/api', (req, res, next) => {
+  const pathName = req.path;
+  if (
+    pathName.startsWith('/auth/') ||
+    pathName === '/health' ||
+    pathName === '/live-sync' ||
+    pathName.startsWith('/images/') ||
+    pathName === '/listings' && req.method === 'GET' ||
+    pathName === '/sync-meta' && req.method === 'GET'
+  ) {
+    return next();
+  }
+
+  // Keep local development usable without exposing insecure built-in PINs.
+  if (!isProd && !isAuthConfigured()) return next();
+  if (!isAuthConfigured()) {
+    return res.status(503).json({
+      success: false,
+      error: 'ورود امن سرور پیکربندی نشده است؛ ADMIN_PIN، COLLEAGUE_PIN و SESSION_SECRET را در متغیرهای محیطی تنظیم کنید.',
+    });
+  }
+
+  const session = readAuthSession(req);
+  if (isAdminApiPath(pathName, req.method)) {
+    if (!session) return res.status(401).json({ success: false, error: 'برای این عملیات باید وارد حساب مدیر شوید.' });
+    if (session.role !== 'admin') return res.status(403).json({ success: false, error: 'این عملیات فقط برای مدیر مجاز است.' });
+    return next();
+  }
+
+  if (isColleagueWritePath(pathName, req.method)) {
+    if (!session) return res.status(401).json({ success: false, error: 'برای ثبت یا ویرایش آگهی ابتدا وارد شوید.' });
+    return next();
+  }
+
+  return next();
+});
+
+app.post('/api/auth/login', (req, res) => {
+  if (!isAuthConfigured()) {
+    return res.status(503).json({
+      success: false,
+      error: 'ورود امن سرور پیکربندی نشده است؛ مدیر باید PINها و SESSION_SECRET را در متغیرهای محیطی تنظیم کند.',
+    });
+  }
+
+  const now = Date.now();
+  const address = String(req.ip || req.socket.remoteAddress || 'unknown');
+  const attempts = loginAttempts.get(address) || { windowStartedAt: now, count: 0, blockedUntil: 0 };
+  if (attempts.blockedUntil > now) {
+    return res.status(429).json({ success: false, error: 'تلاش‌های ورود بیش از حد مجاز است؛ بعداً دوباره امتحان کنید.' });
+  }
+  if (now - attempts.windowStartedAt > 15 * 60 * 1000) {
+    attempts.windowStartedAt = now;
+    attempts.count = 0;
+    attempts.blockedUntil = 0;
+  }
+
+  const pin = String(req.body?.pin || '').replace(/[^0-9]/g, '');
+  const role: AuthRole | null = constantTimePinMatch(pin, ADMIN_PIN)
+    ? 'admin'
+    : constantTimePinMatch(pin, COLLEAGUE_PIN)
+      ? 'colleague'
+      : null;
+
+  if (!role) {
+    attempts.count += 1;
+    if (attempts.count >= 5) attempts.blockedUntil = now + 15 * 60 * 1000;
+    loginAttempts.set(address, attempts);
+    return res.status(401).json({ success: false, error: 'رمز ورود معتبر نیست.' });
+  }
+
+  loginAttempts.delete(address);
+  const expiresAt = now + AUTH_SESSION_TTL_MS;
+  setAuthCookie(res, createAuthToken(role), Math.floor(AUTH_SESSION_TTL_MS / 1000));
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json({ success: true, role, expiresAt });
+});
+
+app.get('/api/auth/session', (req, res) => {
+  const session = readAuthSession(req);
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json({
+    authenticated: Boolean(session),
+    role: session?.role || 'guest',
+    expiresAt: session?.expiresAt || null,
+  });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  setAuthCookie(res, '', 0);
+  return res.json({ success: true });
 });
 
 // Database file path resolution (Liara Persistent Disk at /data or local fallback)
@@ -465,6 +658,12 @@ async function persistPostgresSnapshot(client: PoolClient): Promise<void> {
 }
 
 async function initializePostgresStore(): Promise<void> {
+  if (isProd && !isAuthConfigured()) {
+    throw new Error(
+      'Secure server authentication is required in production. Configure distinct 4-digit ADMIN_PIN and COLLEAGUE_PIN values plus a random SESSION_SECRET of at least 32 characters.'
+    );
+  }
+
   if (!postgresPool) {
     console.log('Database backend: persistent JSON file (PG_URI / DATABASE_URL not configured)');
     return;
