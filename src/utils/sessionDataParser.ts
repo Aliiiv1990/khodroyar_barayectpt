@@ -1212,6 +1212,8 @@ export async function parseZipArchive(
   sellersCount: number;
   buyersCount: number;
   errorsCount: number;
+  sourceRecordsCount: number;
+  skippedRecordsCount: number;
   extractedImagesCount: number;
 }> {
   const zip = new JSZip();
