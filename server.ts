@@ -218,6 +218,7 @@ let diskSaveTimeout: NodeJS.Timeout | null = null;
 let isWritingToDisk = false;
 let pendingDiskSave = false;
 let postgresDirty = false;
+let postgresLastLoadedVersion = '';
 
 const pgConnectionString = process.env.PG_URI || process.env.DATABASE_URL || '';
 const postgresPool: Pool | null = pgConnectionString
@@ -330,11 +331,18 @@ async function prepareListingsForPostgres(listings: any[]): Promise<any[]> {
 
 async function loadPostgresSnapshot(client: PoolClient): Promise<void> {
   const stateResult = await client.query(
-    'SELECT revision, last_updated, published_by, hidden_batches, tombstones, confirmed_batches FROM car_app_state WHERE id = 1'
+    'SELECT revision, last_updated, published_by, hidden_batches, tombstones, confirmed_batches, updated_at FROM car_app_state WHERE id = 1'
   );
   const state = stateResult.rows[0];
   if (!state) {
     throw new Error('PostgreSQL application state row is missing.');
+  }
+
+  const stateVersion = state.updated_at instanceof Date
+    ? state.updated_at.toISOString()
+    : String(state.updated_at || '');
+  if (stateVersion && stateVersion === postgresLastLoadedVersion) {
+    return;
   }
 
   const listingResult = await client.query(
@@ -353,6 +361,7 @@ async function loadPostgresSnapshot(client: PoolClient): Promise<void> {
         ? state.confirmed_batches
         : {},
   };
+  postgresLastLoadedVersion = stateVersion;
 }
 
 async function persistPostgresSnapshot(client: PoolClient): Promise<void> {
@@ -440,6 +449,12 @@ async function persistPostgresSnapshot(client: PoolClient): Promise<void> {
       ]
     );
     await client.query('COMMIT');
+
+    const versionResult = await client.query('SELECT updated_at FROM car_app_state WHERE id = 1');
+    const savedVersion = versionResult.rows[0]?.updated_at;
+    postgresLastLoadedVersion = savedVersion instanceof Date
+      ? savedVersion.toISOString()
+      : String(savedVersion || '');
 
     // Keep the active process lean as well as the persistent DB.
     memoryDb.listings = preparedListings;
