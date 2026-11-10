@@ -342,13 +342,10 @@ export default function App() {
               saveListingsToIndexedDB(prunedListings);
               return prunedListings;
             }
-            const serverIds = new Set(prunedListings.map((c) => c.id));
-            const localUnsynced = prev.filter(
-              (item) => !serverIds.has(item.id) && !String(item.id).startsWith('car_')
-            );
-            const merged = [...prunedListings, ...localUnsynced];
-            saveListingsToIndexedDB(merged);
-            return merged;
+            // The server is authoritative whenever it is reachable. Merging arbitrary
+            // local cache entries here can resurrect records deleted on another device.
+            saveListingsToIndexedDB(prunedListings);
+            return prunedListings;
           });
         }
       } catch (err) {
@@ -386,7 +383,12 @@ export default function App() {
 
         // Purge tombstones: deleted ads on server can NEVER resurrect from client cache
         if (Array.isArray((meta as any).tombstones) && (meta as any).tombstones.length > 0) {
-          const tombSet = new Set((meta as any).tombstones.map(String));
+          const tombSet = new Set(
+            (meta as any).tombstones
+              .map((item: any) => typeof item === 'string' ? item : item?.id)
+              .filter((id: unknown): id is string | number => typeof id === 'string' || typeof id === 'number')
+              .map(String)
+          );
           setListings((prev) => {
             const hasTomb = prev.some((l) => tombSet.has(String(l.id)));
             if (!hasTomb) return prev;
