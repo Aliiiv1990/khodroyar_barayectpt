@@ -2080,6 +2080,7 @@ app.get('/api/export/liara-zip', async (req, res) => {
         express: '^4.21.2',
         dotenv: '^17.2.3',
         jszip: '^3.10.2',
+        pg: '^8.16.3',
       },
     };
     zip.file('package.json', JSON.stringify(prodPackageJson, null, 2));
@@ -2113,7 +2114,10 @@ app.get('/api/export/liara-zip', async (req, res) => {
     zip.file('.liaraignore', 'node_modules/\n.git/\n.env\n.env.local\n.DS_Store\n');
 
     // 5. .env.example
-    zip.file('.env.example', 'PORT=3000\nNODE_ENV=production\n');
+    zip.file(
+      '.env.example',
+      'PORT=3000\nNODE_ENV=production\n# Liara PostgreSQL connection string\nPG_URI=postgresql://USER:PASSWORD@HOST:PORT/DATABASE\n'
+    );
 
     // 6. dist folder (all compiled frontend assets)
     const distPath = path.resolve(__dirname, 'dist');
