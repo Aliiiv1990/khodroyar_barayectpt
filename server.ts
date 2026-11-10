@@ -470,6 +470,12 @@ async function initializePostgresStore(): Promise<void> {
     return;
   }
 
+  if (process.env.NODE_ENV === 'production' && !fs.existsSync('/data')) {
+    throw new Error(
+      'PostgreSQL mode requires the Liara persistent disk mounted at /data because listing photos are stored there. Attach the data disk before deployment.'
+    );
+  }
+
   const client = await postgresPool.connect();
   try {
     await client.query('SELECT pg_advisory_lock($1::bigint)', [POSTGRES_ADVISORY_LOCK_KEY]);
