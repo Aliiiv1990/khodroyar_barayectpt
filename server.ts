@@ -734,6 +734,10 @@ async function initializePostgresStore(): Promise<void> {
         await fs.promises.copyFile(legacyPath, backupPath);
         console.log(`Legacy database backup created: ${backupPath}`);
         memoryDb = normalizeDatabasePayload(parsedLegacy);
+      } else if (isProd && process.env.ALLOW_EMPTY_POSTGRES_BOOTSTRAP !== 'true') {
+        throw new Error(
+          `فایل دیتابیس قدیمی پیدا نشد: ${legacyPath}. برای جلوگیری از شروع ناخواسته با دیتابیس خالی، مهاجرت متوقف شد. اگر دیتابیس واقعاً باید خالی شروع شود، فقط پس از بررسی دیسک /data مقدار ALLOW_EMPTY_POSTGRES_BOOTSTRAP=true را تنظیم کنید.`
+        );
       }
 
       await persistPostgresSnapshot(client);
