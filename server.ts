@@ -1029,7 +1029,8 @@ async function extractZipDirectlyToDisk(
         }
       }
     } catch (err) {
-      console.warn('Failed to parse json file from zip:', jFile.name, err);
+      // Do not silently continue with a partial catalogue when a JSON source file is corrupt.
+      throw new Error(`خواندن فایل JSON در آرشیو ناموفق بود: ${jFile.name} — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1176,7 +1177,19 @@ async function extractZipDirectlyToDisk(
   }
 
   const batchName = customBatchName || `car_session_${new Date().toLocaleDateString('fa-IR').replace(/\//g, '_')}.zip`;
+  const sourceRecordsCount =
+    (sessionObj.sellers || []).filter(Boolean).length +
+    (sessionObj.buyers || []).filter(Boolean).length;
   const result = parseSessionJson(sessionObj, new Map(), textMap, batchName);
+  const skippedRecordsCount = Math.max(0, sourceRecordsCount - result.listings.length);
+
+  // Refuse to replace an existing batch with a silently incomplete parse.
+  // The original database remains untouched so the administrator can correct/retry the ZIP.
+  if (skippedRecordsCount > 0 || result.errorsCount > 0) {
+    throw new Error(
+      `پردازش ZIP کامل نبود؛ ${sourceRecordsCount} رکورد منبع شناسایی شد اما ${result.listings.length} رکورد قابل ثبت بود و ${skippedRecordsCount} رکورد رد شد. دیتابیس قبلی تغییر نکرد. فایل JSON و فیلدهای رکوردهای ردشده را بررسی کنید.`
+    );
+  }
 
   // Link images with zero RAM overhead (keep heavy base64 strings empty!)
   for (const item of result.listings) {
@@ -1219,6 +1232,9 @@ async function extractZipDirectlyToDisk(
     message: `فایل با موفقیت و معماری صفر-رم در دیسک دائمی لیارا پردازش شد: ${result.sellersCount} خودرو، ${result.buyersCount} متقاضی خرید و ${savedImagesCount} تصویر ذخیره شدند.`,
     total: memoryDb.listings.length,
     batchCount: result.listings.length,
+    sourceRecordsCount,
+    skippedRecordsCount,
+    errorsCount: result.errorsCount,
     sellersCount: result.sellersCount,
     buyersCount: result.buyersCount,
     extractedImagesCount: savedImagesCount,
