@@ -561,11 +561,19 @@ app.use('/api', async (req, res, next) => {
     await client.query('SELECT pg_advisory_lock($1::bigint)', [POSTGRES_ADVISORY_LOCK_KEY]);
     await loadPostgresSnapshot(client);
 
-    res.once('finish', () => { void releaseClient(); });
-    res.once('close', () => { void releaseClient(); });
-
     const originalSend = res.send.bind(res);
     let sendStarted = false;
+    res.once('finish', () => { void releaseClient(); });
+    res.once('close', () => {
+      // A client may disconnect before the response is sent. Discard its
+      // uncommitted in-memory mutation and force the next request to reload PG.
+      if (!sendStarted && postgresDirty) {
+        postgresDirty = false;
+        postgresLastLoadedVersion = '';
+      }
+      void releaseClient();
+    });
+
     (res as any).send = (body?: any) => {
       if (sendStarted) return res;
       if (!postgresDirty) return originalSend(body);
@@ -577,6 +585,8 @@ app.use('/api', async (req, res, next) => {
           originalSend(body);
         })
         .catch((error) => {
+          postgresDirty = false;
+          postgresLastLoadedVersion = '';
           console.error('PostgreSQL transaction failed; refusing to acknowledge the write:', error);
           res.statusCode = 503;
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
