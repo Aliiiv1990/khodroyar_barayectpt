@@ -171,10 +171,44 @@ export default function App() {
     sessionStorage.removeItem('car_session_role_v2');
     localStorage.removeItem('car_user_role');
     localStorage.removeItem('car_colleague_unlocked');
+    void fetch('/api/auth/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+    }).catch(() => undefined);
   }, []);
 
   const handleToggleColleagueLock = useCallback(() => {
     setIsAuthModalOpen(true);
+  }, []);
+
+  // A browser tab role is only a UI hint. Restore permissions from the server's
+  // HttpOnly signed session cookie on every page load.
+  useEffect(() => {
+    let active = true;
+    fetch('/api/auth/session', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    })
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then((session) => {
+        if (!active) return;
+        if (session?.authenticated && (session.role === 'admin' || session.role === 'colleague')) {
+          setUserRole(session.role);
+          sessionStorage.setItem('car_session_role_v2', session.role);
+        } else {
+          setUserRole('guest');
+          sessionStorage.removeItem('car_session_role_v2');
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setUserRole('guest');
+        sessionStorage.removeItem('car_session_role_v2');
+      });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Centralized Data Loader:
