@@ -466,6 +466,13 @@ function safeImageStorageId(value: unknown): string {
   return id.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180) || 'unknown-image';
 }
 
+function safeImagePath(imagesDir: string, fileName: string): string | null {
+  const root = path.resolve(imagesDir);
+  const candidate = path.resolve(root, fileName);
+  if (candidate === root || !candidate.startsWith(root + path.sep)) return null;
+  return candidate;
+}
+
 function parseImageDataUrl(value: unknown): { buffer: Buffer; mimeType: string; extension: string } | null {
   if (typeof value !== 'string' || !value.startsWith('data:image/')) return null;
 
@@ -1021,34 +1028,41 @@ app.get('/api/images/:id', (req, res) => {
 
     // 1. Check physical files on persistent disk (/data/images/)
     const safeTargetId = safeImageStorageId(targetId);
-    const candidates: string[] = [
-      // Preferred PostgreSQL-mode image variants stored outside JSON in /data/images.
-      ...['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'bmp', 'avif'].flatMap((ext) =>
-        (isFull ? ['full', 'thumb'] : ['thumb', 'full']).map((variant) =>
-          path.join(imagesDir, `${safeTargetId}.${variant}.${ext}`)
-        )
-      ),
-      // Legacy ZIP/direct-upload image paths remain readable for existing deployments.
-      path.join(imagesDir, `${targetId}.jpg`),
-      path.join(imagesDir, `${targetId}.png`),
-      path.join(imagesDir, `${targetId}.webp`),
-      path.join(imagesDir, targetId),
-      path.join(imagesDir, `${rawParam}.jpg`),
-      path.join(imagesDir, rawParam),
-    ];
+    const candidates: string[] = [];
+    const addImageCandidate = (fileName: string) => {
+      const safePath = safeImagePath(imagesDir, fileName);
+      if (safePath) candidates.push(safePath);
+    };
+
+    // Preferred PostgreSQL-mode image variants stored outside JSON in /data/images.
+    for (const ext of ['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'bmp', 'avif']) {
+      for (const variant of isFull ? ['full', 'thumb'] : ['thumb', 'full']) {
+        addImageCandidate(`${safeTargetId}.${variant}.${ext}`);
+      }
+    }
+
+    // Legacy ZIP/direct-upload image paths remain readable, but must stay below imagesDir.
+    addImageCandidate(`${targetId}.jpg`);
+    addImageCandidate(`${targetId}.png`);
+    addImageCandidate(`${targetId}.webp`);
+    addImageCandidate(targetId);
+    addImageCandidate(`${rawParam}.jpg`);
+    addImageCandidate(rawParam);
+
     if (found) {
       if (found.imageFileName && !found.imageFileName.toLowerCase().endsWith('.txt')) {
-        const baseName = found.imageFileName.split('/').pop() || found.imageFileName;
+        const baseName = path.basename(String(found.imageFileName).replace(/\\/g, '/'));
         const baseNoExt = baseName.replace(/\.[^/.]+$/, '');
-        candidates.push(path.join(imagesDir, baseName));
-        candidates.push(path.join(imagesDir, `${baseName}.jpg`));
-        candidates.push(path.join(imagesDir, `${baseNoExt}.jpg`));
-        candidates.push(path.join(imagesDir, `${baseNoExt}.png`));
-        candidates.push(path.join(imagesDir, `${baseNoExt}.webp`));
+        addImageCandidate(baseName);
+        addImageCandidate(`${baseName}.jpg`);
+        addImageCandidate(`${baseNoExt}.jpg`);
+        addImageCandidate(`${baseNoExt}.png`);
+        addImageCandidate(`${baseNoExt}.webp`);
       }
       if (found.mediaId) {
-        candidates.push(path.join(imagesDir, `${found.mediaId}.jpg`));
-        candidates.push(path.join(imagesDir, String(found.mediaId)));
+        const mediaId = path.basename(String(found.mediaId).replace(/\\/g, '/'));
+        addImageCandidate(`${mediaId}.jpg`);
+        addImageCandidate(mediaId);
       }
     }
 
