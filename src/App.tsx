@@ -16,7 +16,6 @@ import {
   clearIndexedDBListings,
   isStorageExplicitlyCleared,
   setStorageExplicitlyCleared,
-  hasUserVisitedBefore,
   markUserVisited,
 } from './utils/storage';
 import { HeaderAndTabs } from './components/HeaderAndTabs';
@@ -127,19 +126,8 @@ export default function App() {
   }, []);
 
   // Roles: 'guest' (hidden phones), 'colleague' (visible phones), 'admin' (server sync & database controls)
-  const [userRole, setUserRole] = useState<UserAuthRole>(() => {
-    if (typeof window !== 'undefined') {
-      // Remove legacy auto-persisted role keys so the top button never falsely shows "مدیر" on fresh entry
-      localStorage.removeItem('car_user_role');
-      localStorage.removeItem('car_colleague_unlocked');
-
-      const savedSessionRole = sessionStorage.getItem('car_session_role_v2') as UserAuthRole;
-      if (savedSessionRole === 'admin' || savedSessionRole === 'colleague') {
-        return savedSessionRole;
-      }
-    }
-    return 'guest';
-  });
+  // Never trust a role cached by the browser; the signed server session restores it after mount.
+  const [userRole, setUserRole] = useState<UserAuthRole>('guest');
 
   const isUnlockedColleague = userRole === 'admin' || userRole === 'colleague';
 
