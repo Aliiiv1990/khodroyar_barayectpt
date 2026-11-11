@@ -599,7 +599,7 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
           setImportStatus('ثبت در PocketBase کامل شد: ' + toPersianDigits(result.saved) + ' رکورد در بسته «' + targetTitle + '».');
           setIsSuccess(true);
         }
-        if (newlyImportedBatch && targetTitle === newlyImportedBatch.batchName) setNewlyImportedBatch(null);
+        if (result.failed === 0 && newlyImportedBatch && targetTitle === newlyImportedBatch.batchName) setNewlyImportedBatch(null);
         await handleCheckLiara();
         await loadBatches();
         return;
