@@ -14,6 +14,7 @@ This branch is a migration workspace. It does not change the live Liara app.
 3. Create the first admin account through the PocketBase superuser UI/CLI.
 4. Create application users in the `users` auth collection and assign `role=admin` or `role=colleague`.
 5. Set frontend build variable `VITE_POCKETBASE_URL` to the HTTPS PocketBase base URL. This is a public API base URL, not a secret.
+6. Set Node runtime variable `POCKETBASE_URL` to the same base URL. The server uses the authenticated administrator's PocketBase token only to process ZIP imports; it does not need a PocketBase superuser password.
 6. Never put a PocketBase superuser email/password or API key into a `VITE_*` variable or commit it to Git.
 
 ## Current code status
