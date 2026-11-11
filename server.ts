@@ -1655,7 +1655,7 @@ async function importParsedListingsToPocketBase(
   const fileCandidates = (item: any): string[] => {
     const safeId = safeImageStorageId(item.id);
     const names = [safeId + '.jpg'];
-    if (item.imageFileName) names.push(path.basename(String(item.imageFileName).replace(/\\\\/g, '/')));
+    if (item.imageFileName) names.push(path.basename(String(item.imageFileName).replace(/\\/g, '/')));
     return names;
   };
   const makeFields = (item: any): Record<string, string> => ({
