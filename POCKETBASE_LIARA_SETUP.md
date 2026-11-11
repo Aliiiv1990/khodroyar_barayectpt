@@ -22,3 +22,12 @@ This branch is a migration workspace. It does not change the live Liara app.
 - The current React screens are intentionally retained.
 - The adapter is not yet wired into the app's active data flow or login screen.
 - Do not deploy this branch to the live app until migration phases and staging tests are complete.
+
+
+## ZIP import and disk sizing
+- The Node app receives the ZIP in resumable 1.5 MB chunks and assembles it on its `/data` disk.
+- ZIP entries are read from disk through a streaming archive reader; the whole archive is not loaded into Node memory.
+- During extraction, the Node `/data` disk temporarily needs room for the uploaded ZIP plus the uncompressed files. The server checks available space before extraction and refuses the import if staging space is insufficient.
+- The PocketBase service's own persistent disk stores the final uploaded photo files and its database. Size that disk for the uncompressed photo collection plus growth and backups.
+- Keep both disks mounted persistently. The Node staging disk can be cleaned after a successful import; the PocketBase data disk must never be cleared during routine deploys.
+- The import is idempotent by `legacy_id`; if a transfer or processing run fails, selecting the same ZIP again resumes the upload and updates existing records rather than duplicating them.
