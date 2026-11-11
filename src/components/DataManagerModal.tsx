@@ -340,14 +340,9 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     setIsCheckingLiara(true);
     try {
       if (USE_POCKETBASE) {
-        const records = await pocketbaseListings.list();
-        setLiaraHealth({
-          status: 'ok', platform: 'PocketBase', dbLocation: 'PocketBase persistent storage',
-          isLiaraDisk: false, totalListings: records.length,
-          salesCount: records.filter((item) => item.type === 'sale').length,
-          buysCount: records.filter((item) => item.type === 'buy_request').length,
-          lastUpdated: new Date().toISOString(),
-        });
+        const health = await checkLiaraHealth(8000);
+        if (!health.ok || !health.data) throw new Error(health.message);
+        setLiaraHealth(health.data);
         return;
       }
       const res = await checkLiaraHealth(6000);
