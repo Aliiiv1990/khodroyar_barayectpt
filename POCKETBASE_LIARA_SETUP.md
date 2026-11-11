@@ -5,7 +5,7 @@ This branch is a migration workspace. It does not change the live Liara app.
 ## Required infrastructure
 1. Create a separate Liara service for PocketBase using `Dockerfile.pocketbase` from this repository; do not replace the existing `carplus` Node app.
 2. Attach a persistent disk to the PocketBase service and mount it at `/pb/pb_data`.
-3. Publish PocketBase over HTTPS, configure CORS to allow the exact `carplus` app origin, and restrict access to its admin UI.
+3. Publish PocketBase over HTTPS and set the PocketBase service environment variable `POCKETBASE_ALLOWED_ORIGINS` to the exact browser app origin (default in the Dockerfile: `https://carplus.liara.run`). If you use a custom domain, update this value. The Dockerfile passes it to PocketBase's `--origins` flag.
 4. Keep a separate backup of the PocketBase data directory and uploaded files. The Node app's `/data` staging disk is separate from this PocketBase disk.
 
 ## Initial setup
