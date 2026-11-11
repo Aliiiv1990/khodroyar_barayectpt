@@ -58,7 +58,7 @@ export function fromPocketBaseRecord(record: RecordModel): CarListing {
     isEdited: Boolean(record.is_edited),
     revision: Number(record.revision || 1),
     status: record.is_active === false ? 'inactive' : 'active',
-    _searchIndex: [record.title, record.brand, record.model, record.city, record.phone_number].filter(Boolean).join(' ').toLocaleLowerCase(),
+    _searchIndex: [record.title, record.brand, record.model, record.city].filter(Boolean).join(' ').toLocaleLowerCase(),
   });
 }
 
@@ -113,7 +113,7 @@ export const pocketbaseListings = {
       const result = await pocketbase.collection('listings').getList(page, pageSize, {
         filter,
         sort: '-created',
-        fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,phone_number,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
+        fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
       });
       records.push(...result.items);
     }
@@ -132,7 +132,7 @@ export const pocketbaseListings = {
 
   async create(listing: CarListing, files: File[] = []): Promise<CarListing> {
     const payload = toFormData(listing, files);
-    payload.append('created_by', String(pocketbase.authStore.model?.id || ''));
+    payload.append('created_by', String(pocketbase.authStore.record?.id || ''));
     const record = await pocketbase.collection('listings').create(payload);
     if (listing.phoneNumber && pocketbase.authStore.isValid) {
       await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.model?.id || '') });
