@@ -28,7 +28,7 @@ migrate((app) => {
     viewRule: "is_active = true || @request.auth.role = \"admin\"",
     createRule: '@request.auth.id != "" && @request.body.created_by = @request.auth.id',
     updateRule: '@request.auth.id != ""',
-    deleteRule: '@request.auth.role = "admin"',
+    deleteRule: '@request.auth.id != ""',
     fields: [
       { name: "legacy_id", type: "text", max: 160 },
       { name: "type", type: "select", required: true, maxSelect: 1, values: ["sale", "buy_request"] },
@@ -76,7 +76,7 @@ migrate((app) => {
     viewRule: '@request.auth.id != ""',
     createRule: '@request.auth.role = "admin" || owner_id = @request.auth.id',
     updateRule: '@request.auth.role = "admin" || owner_id = @request.auth.id',
-    deleteRule: '@request.auth.role = "admin"',
+    deleteRule: '@request.auth.id != ""',
     fields: [
       { name: "listing_id", type: "text", required: true, max: 160 },
       { name: "phone_number", type: "text", max: 40 },
