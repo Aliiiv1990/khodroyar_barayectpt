@@ -80,6 +80,7 @@ export function fromPocketBaseRecord(record: RecordModel): CarListing {
     importDate: String(record.import_date || ''),
     isEdited: Boolean(record.is_edited),
     revision: Number(record.revision || 1),
+    _createdById: String(record.created_by || ''),
     status: record.is_active === false ? 'inactive' : 'active',
     _searchIndex: [record.title, record.brand, record.model, record.city].filter(Boolean).join(' ').toLocaleLowerCase(),
   });
@@ -114,6 +115,7 @@ function toFormData(listing: Partial<CarListing>, files: File[] = []): FormData 
     is_edited: String(Boolean(listing.isEdited)),
     is_active: 'true',
     revision: String(Number(listing.revision || 1)),
+    created_by: String(listing._createdById || pocketbase.authStore.record?.id || ''),
   };
   Object.entries(values).forEach(([key, value]) => form.append(key, value));
   files.forEach((file) => form.append('photos', file, file.name));
@@ -172,11 +174,10 @@ export const pocketbaseListings = {
   },
   async create(listing: CarListing, files: File[] = []): Promise<CarListing> {
     const payload = toFormData(listing, files);
-    payload.append('created_by', String(pocketbase.authStore.record?.id || ''));
     const record = await pocketbase.collection('listings').create(payload);
     if (listing.phoneNumber && pocketbase.authStore.isValid) {
       await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.record?.id || '') });
-      const syncedRecord = await pocketbase.collection('listings').update(record.id, { revision: Number(record.revision || 1) + 1 });
+      const syncedRecord = await pocketbase.collection('listings').update(record.id, { revision: Number(record.revision || 1) + 1, created_by: String(record.created_by || pocketbase.authStore.record?.id || '') });
       void writePocketBaseAudit('create', String(listing.id), 'Listing created');
       return { ...fromPocketBaseRecord(syncedRecord), phoneNumber: listing.phoneNumber || '' };
     }
@@ -201,7 +202,7 @@ export const pocketbaseListings = {
     }
     const record = await pocketbase.collection('listings').update(
       existing.id,
-      toFormData({ ...listing, revision: currentRevision + 1 }, files),
+      toFormData({ ...listing, _createdById: String(existing.created_by || ''), revision: currentRevision + 1 }, files),
     );
     let finalRecord = record;
     if (listing.phoneNumber !== undefined && pocketbase.authStore.isValid) {
@@ -218,7 +219,7 @@ export const pocketbaseListings = {
       } else if (listing.phoneNumber) {
         await pocketbase.collection('listing_contacts').create({ listing_id: recordId, phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.record?.id || '') });
       }
-      finalRecord = await pocketbase.collection('listings').update(record.id, { revision: Number(record.revision || currentRevision + 1) + 1 });
+      finalRecord = await pocketbase.collection('listings').update(record.id, { revision: Number(record.revision || currentRevision + 1) + 1, created_by: String(existing.created_by || '') });
     }
     void writePocketBaseAudit('update', recordId, 'Listing updated');
     return { ...fromPocketBaseRecord(finalRecord), phoneNumber: listing.phoneNumber ?? '' };
@@ -296,13 +297,13 @@ export const pocketbaseListings = {
     requirePocketBaseAdmin();
     const records = await pocketbase.collection('listings').getFullList({
       filter: pocketbase.filter('import_batch = {:batchName}', { batchName }),
-      fields: 'id,is_active,revision',
+      fields: 'id,is_active,revision,created_by',
     });
     let cursor = 0;
     const worker = async () => {
       while (cursor < records.length) {
         const index = cursor++;
-        await pocketbase.collection('listings').update(records[index].id, { is_active: visible, revision: Number(records[index].revision || 1) + 1 });
+        await pocketbase.collection('listings').update(records[index].id, { is_active: visible, revision: Number(records[index].revision || 1) + 1, created_by: String(records[index].created_by || '') });
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, records.length) }, () => worker()));
