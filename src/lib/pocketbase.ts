@@ -197,8 +197,8 @@ export const pocketbaseListings = {
     await pocketbase.collection('listings').delete(existing.id);
   },
 
-  async listBatches(): Promise<Array<{
-    requirePocketBaseAdmin(); id: string; batchName: string; date: string; count: number; saleCount: number; buyCount: number; isVisible: boolean }>> {
+  async listBatches(): Promise<Array<{ id: string; batchName: string; date: string; count: number; saleCount: number; buyCount: number; isVisible: boolean }>> {
+    requirePocketBaseAdmin();
     const [records, batches] = await Promise.all([
       pocketbase.collection('listings').getFullList({ fields: 'legacy_id,import_batch,type,is_active,created' }),
       pocketbase.collection('import_batches').getFullList({ sort: '-created' }),
