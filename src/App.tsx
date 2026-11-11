@@ -232,6 +232,10 @@ export default function App() {
           return;
         }
         if (!event.record) return;
+        if (event.record.status === 'inactive') {
+          setListings((previous) => previous.filter((item) => String(item.id) !== String(event.record?.id)));
+          return;
+        }
         setListings((previous) => {
           const index = previous.findIndex((item) => String(item.id) === String(event.record?.id));
           if (index < 0) return [event.record as CarListing, ...previous];
