@@ -213,6 +213,9 @@ export async function publishListingsToLiara(
       }
     }
 
+    // Capture the exact IDs expected from this import. A successful HTTP status
+    // for each batch is not enough: verify the final server catalogue before reporting success.
+    const expectedIds = new Set(sanitizedListings.map((item) => String(item.id)));
     const uploadJobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const failedBatches: string[] = [];
     let totalSaved = sanitizedListings.length;
@@ -331,6 +334,13 @@ export async function publishListingsToLiara(
             if (!fullBatchResp.ok) {
               throw new Error(`خطای سرور (${resp.status})`);
             }
+          } else {
+            const imageResult = await resp.json();
+            if (!imageResult?.success || Number(imageResult.updated) !== batchSlice.length) {
+              throw new Error(
+                `ذخیره تصویر ناقص بود: ${Number(imageResult?.updated) || 0} از ${batchSlice.length} تصویر به رکوردها متصل شد.`
+              );
+            }
           }
 
           batchSuccess = true;
@@ -364,10 +374,29 @@ export async function publishListingsToLiara(
       };
     }
 
+    // Re-read the lightweight server catalogue and reconcile every submitted ID.
+    const verifiedListings = await fetchListingsFromLiara(45000, true);
+    if (!verifiedListings) {
+      return {
+        success: false,
+        message: 'بسته‌ها ارسال شدند، اما دریافت فهرست نهایی سرور برای تأیید ذخیره‌سازی ممکن نشد. لطفاً وضعیت سرور را بررسی و دوباره همگام‌سازی کنید.',
+        count: totalSaved,
+      };
+    }
+    const persistedIds = new Set(verifiedListings.map((item) => String(item.id)));
+    const missingIds = Array.from(expectedIds).filter((id) => !persistedIds.has(id));
+    if (missingIds.length > 0) {
+      return {
+        success: false,
+        message: `تأیید نهایی ناموفق بود: از ${expectedIds.size} شناسه ارسالی، ${missingIds.length} مورد در فهرست سرور پیدا نشد. هیچ موفقیت کاملی اعلام نمی‌شود؛ دوباره تلاش کنید.`,
+        count: verifiedListings.length,
+      };
+    }
+
     return {
       success: true,
-      message: `تمامی ${totalSaved} خودرو همراه با تصاویر و مشخصات با موفقیت در دیتابیس پایدار لیارا ثبت گردید و بلافاصله برای تمام دستگاه‌ها فعال شد.`,
-      count: totalSaved,
+      message: `تمام ${expectedIds.size} شناسه ارسالی در فهرست سرور تأیید شد؛ تعداد کل ثبت‌شده: ${verifiedListings.length}.`,
+      count: verifiedListings.length,
     };
   } catch (err: any) {
     let cleanMessage = err.message || 'مشکل ارتباط با سرور لیارا';
@@ -746,7 +775,15 @@ export async function uploadZipFileToLiara(
   file: File | Blob,
   batchName?: string,
   onProgress?: (percent: number, message?: string) => void
-): Promise<{ success: boolean; message: string; total?: number; batchCount?: number; sellersCount?: number; buyersCount?: number; extractedImagesCount?: number }> {
+): Promise<{
+  success: boolean;
+  message: string;
+  total?: number;
+  batchCount?: number;
+  sellersCount?: number;
+  buyersCount?: number;
+  extractedImagesCount?: number;
+}> {
   const isFile = typeof File !== 'undefined' && file instanceof File;
   const fileName = batchName || (isFile ? (file as File).name : 'car_session_' + Date.now() + '.zip');
   if (!file.size) return { success: false, message: 'فایل ZIP خالی است.' };
@@ -776,17 +813,29 @@ export async function uploadZipFileToLiara(
   try {
     const response = await fetch('/api/admin/upload-chunk/init', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uploadId, fileName, fileSize: file.size, totalChunks, batchName: fileName, publishedBy: 'مدیر نمایشگاه' }),
+      body: JSON.stringify({
+        uploadId, fileName, fileSize: file.size, totalChunks,
+        batchName: fileName, publishedBy: 'مدیر نمایشگاه',
+      }),
       signal: initController.signal, cache: 'no-store',
     });
     let payload: any = null;
     try { payload = await response.json(); } catch {}
-    if (!response.ok || payload?.success === false) return { success: false, message: errorMessage(response.status, payload) };
+    if (!response.ok || payload?.success === false) {
+      return { success: false, message: errorMessage(response.status, payload) };
+    }
     if (Array.isArray(payload?.receivedChunks)) {
-      receivedChunks = new Set(payload.receivedChunks.filter((n: unknown) => Number.isInteger(n) && Number(n) >= 0 && Number(n) < totalChunks));
+      receivedChunks = new Set(payload.receivedChunks.filter((n: unknown) =>
+        Number.isInteger(n) && Number(n) >= 0 && Number(n) < totalChunks
+      ));
     }
   } catch (error: any) {
-    return { success: false, message: error?.name === 'AbortError' ? 'شروع آپلود در ۳۰ ثانیه پاسخی از سرور نگرفت؛ اتصال سرور و دیتابیس را بررسی کنید.' : (error?.message || 'شروع آپلود در سرور ناموفق بود.') };
+    return {
+      success: false,
+      message: error?.name === 'AbortError'
+        ? 'شروع آپلود در ۳۰ ثانیه پاسخی از سرور نگرفت؛ اتصال سرور و دیتابیس را بررسی کنید.'
+        : (error?.message || 'شروع آپلود در سرور ناموفق بود.'),
+    };
   } finally { clearTimeout(initTimer); }
 
   let uploadedBytes = 0;
@@ -846,7 +895,13 @@ export async function uploadZipFileToLiara(
         }
       }
     }
-    if (!uploaded) return { success: false, message: 'ارسال تکه ' + (chunkIndex + 1) + ' از ' + totalChunks + ' انجام نشد: ' + lastError + ' فایل موقت حفظ شده؛ همان فایل را دوباره انتخاب کنید تا ادامه یابد.' };
+    if (!uploaded) {
+      return {
+        success: false,
+        message: 'ارسال تکه ' + (chunkIndex + 1) + ' از ' + totalChunks + ' انجام نشد: ' + lastError +
+          ' فایل موقت حفظ شده؛ همان فایل را دوباره انتخاب کنید تا ادامه یابد.',
+      };
+    }
   }
 
   onProgress?.(95, 'فایل دریافت شد؛ در حال استخراج تصاویر و ثبت متن‌ها در PostgreSQL...');
@@ -862,9 +917,18 @@ export async function uploadZipFileToLiara(
     try { result = await response.json(); } catch {}
     if (!response.ok || result?.success === false) return { success: false, message: errorMessage(response.status, result) };
     try { if (typeof localStorage !== 'undefined') localStorage.removeItem(resumeKey); } catch {}
-    onProgress?.(100, 'تمام شد؛ ' + (result.batchCount ?? result.total ?? 0) + ' رکورد و ' + (result.extractedImagesCount ?? 0) + ' عکس ثبت شد.');
+    onProgress?.(
+      100,
+      'تمام شد؛ ' + (result.batchCount ?? result.total ?? 0) + ' رکورد و ' +
+        (result.extractedImagesCount ?? 0) + ' عکس ثبت شد.'
+    );
     return result;
   } catch (error: any) {
-    return { success: false, message: error?.name === 'AbortError' ? 'استخراج ZIP بیش از ۱۰ دقیقه طول کشید؛ فایل موقت برای بررسی روی سرور حفظ شده است.' : (error?.message || 'ثبت نهایی ZIP در سرور ناموفق بود.') };
+    return {
+      success: false,
+      message: error?.name === 'AbortError'
+        ? 'استخراج ZIP بیش از ۱۰ دقیقه طول کشید؛ فایل موقت برای بررسی روی سرور حفظ شده است.'
+        : (error?.message || 'ثبت نهایی ZIP در سرور ناموفق بود.'),
+    };
   } finally { clearTimeout(finalTimer); }
 }
