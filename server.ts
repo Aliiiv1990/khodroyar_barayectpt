@@ -1734,6 +1734,7 @@ async function importParsedListingsToPocketBase(
         catch (error: any) { if (error?.status !== 404) throw error; }
         let record: any;
         if (existing) {
+          form.set('created_by', String(existing.created_by || userId));
           form.set('revision', String(Number(existing.revision || 1) + 1));
           record = await pb.collection('listings').update(existing.id, form);
         } else {
