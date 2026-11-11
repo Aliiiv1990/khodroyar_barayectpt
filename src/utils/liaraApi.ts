@@ -802,7 +802,7 @@ export async function uploadZipFileToLiara(
     if (status === 401) return 'نشست مدیر معتبر نیست؛ دوباره با رمز مدیر وارد برنامه شوید.';
     if (status === 403) return 'این عملیات فقط با دسترسی مدیر مجاز است.';
     if (status === 413) return 'حجم فایل از سقف مجاز سرور بیشتر است.';
-    if (status === 503) return 'سرور یا اتصال PostgreSQL آماده نیست؛ وضعیت سرویس لیارا را بررسی کنید.';
+    if (status === 503) return 'سرور یا اتصال پایگاه داده آماده نیست؛ وضعیت سرویس را بررسی کنید.';
     if (status === 404) return 'مسیر آپلود در نسخه فعلی سرور وجود ندارد؛ نسخه اصلاح‌شده باید مستقر شود.';
     return 'خطای سرور (کد ' + status + ')';
   };
@@ -907,7 +907,7 @@ export async function uploadZipFileToLiara(
     }
   }
 
-  onProgress?.(95, 'فایل دریافت شد؛ در حال استخراج تصاویر و ثبت متن‌ها در PostgreSQL...');
+  onProgress?.(95, authToken ? 'فایل دریافت شد؛ در حال استخراج تصاویر و ثبت اطلاعات در PocketBase...' : 'فایل دریافت شد؛ در حال استخراج تصاویر و ثبت متن‌ها در PostgreSQL...');
   const finalController = new AbortController();
   const finalTimer = setTimeout(() => finalController.abort(), 10 * 60 * 1000);
   try {
