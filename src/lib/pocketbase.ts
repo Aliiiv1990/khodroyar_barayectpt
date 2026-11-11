@@ -116,16 +116,18 @@ export const pocketbaseListings = {
       fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
     });
     const records: RecordModel[] = [...first.items];
-    if (first.totalPages > 1) {
-      const remainingPages = await Promise.all(
-        Array.from({ length: first.totalPages - 1 }, (_, index) =>
-          pocketbase.collection('listings').getList(index + 2, pageSize, {
-            filter,
-            sort: '-created',
-            fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
-          }),
-        ),
+    for (let firstPage = 2; firstPage <= first.totalPages; firstPage += 4) {
+      const pageNumbers = Array.from(
+        { length: Math.min(4, first.totalPages - firstPage + 1) },
+        (_, index) => firstPage + index,
       );
+      const remainingPages = await Promise.all(pageNumbers.map((pageNumber) =>
+        pocketbase.collection('listings').getList(pageNumber, pageSize, {
+          filter,
+          sort: '-created',
+          fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
+        }),
+      ));
       remainingPages.forEach((page) => records.push(...page.items));
     }
     const mapped = records.map(fromPocketBaseRecord);
