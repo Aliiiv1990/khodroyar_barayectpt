@@ -168,7 +168,15 @@ export const pocketbaseListings = {
     const existing = await pocketbase.collection('listings').getFirstListItem(
       pocketbase.filter('legacy_id = {:legacyId}', { legacyId: recordId }),
     );
-    const record = await pocketbase.collection('listings').update(existing.id, toFormData(listing, files));
+    const currentRevision = Number(existing.revision || 1);
+    const requestedRevision = Number(listing.revision || currentRevision);
+    if (requestedRevision !== currentRevision) {
+      throw new Error('این آگهی روی دستگاه دیگری تغییر کرده است. فهرست را تازه‌سازی کنید و دوباره تغییر دهید.');
+    }
+    const record = await pocketbase.collection('listings').update(
+      existing.id,
+      toFormData({ ...listing, revision: currentRevision + 1 }, files),
+    );
     if (listing.phoneNumber !== undefined && pocketbase.authStore.isValid) {
       let contact: RecordModel | null = null;
       try {
@@ -192,7 +200,7 @@ export const pocketbaseListings = {
       const existing = await pocketbase.collection('listings').getFirstListItem(
         pocketbase.filter('legacy_id = {:legacyId}', { legacyId: listing.id }),
       );
-      return await this.update(String(listing.id), listing, files);
+      return await this.update(String(listing.id), { ...listing, revision: Number(existing.revision || 1) }, files);
     } catch (error: any) {
       if (error?.status !== 404) throw error;
       return await this.create(listing, files);
