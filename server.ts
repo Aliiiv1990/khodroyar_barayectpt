@@ -939,7 +939,28 @@ function broadcastSyncEvent(eventType = 'update', extraData: Record<string, any>
 // -----------------------------------------------------------------------------
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  if (process.env.POCKETBASE_URL) {
+    try {
+      const pb = new PocketBase(String(process.env.POCKETBASE_URL).trim());
+      const [all, sales, buys] = await Promise.all([
+        pb.collection('listings').getList(1, 1, { filter: 'is_active = true', sort: '-updated', fields: 'id,updated' }),
+        pb.collection('listings').getList(1, 1, { filter: pb.filter('is_active = true && type = {:type}', { type: 'sale' }), fields: 'id' }),
+        pb.collection('listings').getList(1, 1, { filter: pb.filter('is_active = true && type = {:type}', { type: 'buy_request' }), fields: 'id' }),
+      ]);
+      return res.json({
+        status: 'ok', platform: 'Liara Cloud (Node.js)', dbBackend: 'pocketbase',
+        dbLocation: 'PocketBase service', imageStorage: 'PocketBase file storage',
+        isLiaraDisk: fs.existsSync('/data'), totalListings: all.totalItems,
+        salesCount: sales.totalItems, buysCount: buys.totalItems,
+        lastUpdated: String(all.items[0]?.updated || new Date().toISOString()),
+        serverTime: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('PocketBase health check failed:', error);
+      return res.status(503).json({ status: 'degraded', dbBackend: 'pocketbase', error: 'PocketBase is not reachable.' });
+    }
+  }
   const active = pruneOldServerListings(memoryDb.listings);
   const salesCount = active.filter((l) => l.type === 'sale').length;
   const buysCount = active.filter((l) => l.type === 'buy_request').length;
