@@ -221,7 +221,7 @@ export default function App() {
         }
       };
       void refreshPocketBase();
-      void pocketbaseListings.subscribe((event) => {
+      void pocketbaseListings.subscribe(async (event) => {
         if (!isMounted) return;
         if (event.action === 'delete') {
           setListings((previous) => previous.filter((item) => String(item.id) !== event.recordId));
@@ -232,21 +232,26 @@ export default function App() {
           return;
         }
         if (!event.record) return;
-        if (event.record.status === 'inactive') {
-          setListings((previous) => previous.filter((item) => String(item.id) !== String(event.record?.id)));
+        let liveRecord = event.record;
+        if (pocketbase.authStore.isValid) {
+          const phoneNumber = await pocketbaseListings.getContactPhone(String(liveRecord.id));
+          if (phoneNumber) liveRecord = { ...liveRecord, phoneNumber };
+        }
+        if (!isMounted) return;
+        if (liveRecord.status === 'inactive') {
+          setListings((previous) => previous.filter((item) => String(item.id) !== String(liveRecord.id)));
           return;
         }
         setListings((previous) => {
-          const index = previous.findIndex((item) => String(item.id) === String(event.record?.id));
-          if (index < 0) return [event.record as CarListing, ...previous];
+          const index = previous.findIndex((item) => String(item.id) === String(liveRecord.id));
+          if (index < 0) return [liveRecord as CarListing, ...previous];
           const next = [...previous];
-          next[index] = { ...next[index], ...event.record, phoneNumber: event.record?.phoneNumber || next[index].phoneNumber };
+          next[index] = { ...next[index], ...liveRecord, phoneNumber: liveRecord.phoneNumber || next[index].phoneNumber };
           return next;
         });
-        setSelectedListing((previous) => previous && String(previous.id) === String(event.record?.id)
-          ? ({ ...previous, ...event.record, phoneNumber: event.record?.phoneNumber || previous.phoneNumber } as CarListing)
-          : previous);
-      }).then((unsubscribe) => {
+        setSelectedListing((previous) => previous && String(previous.id) === String(liveRecord.id)
+          ? ({ ...previous, ...liveRecord, phoneNumber: liveRecord.phoneNumber || previous.phoneNumber } as CarListing)
+          : previous);      }).then((unsubscribe) => {
         if (!isMounted) unsubscribe(); else unsubscribeRealtime = unsubscribe;
       }).catch((error) => console.error('PocketBase realtime subscription failed:', error));
       const unsubscribeAuth = pocketbase.authStore.onChange(() => { void refreshPocketBase(); });
