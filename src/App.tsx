@@ -208,6 +208,7 @@ export default function App() {
     let lastSeenServerTimestamp = '';
     if (USE_POCKETBASE) {
       let unsubscribeRealtime: (() => void) | null = null;
+      let importRefreshTimer: ReturnType<typeof setTimeout> | null = null;
       const refreshPocketBase = async () => {
         try {
           const fresh = await pocketbaseListings.list();
@@ -234,8 +235,13 @@ export default function App() {
         if (!event.record) return;
         let liveRecord = event.record;
         if (pocketbase.authStore.isValid) {
-          const phoneNumber = await pocketbaseListings.getContactPhone(String(liveRecord.id));
-          if (phoneNumber) liveRecord = { ...liveRecord, phoneNumber };
+          if (liveRecord.importBatchName && liveRecord.importBatchName !== 'ثبت‌های دستی همکاران و مدیر') {
+            if (importRefreshTimer) clearTimeout(importRefreshTimer);
+            importRefreshTimer = setTimeout(() => { void refreshPocketBase(); }, 2500);
+          } else {
+            const phoneNumber = await pocketbaseListings.getContactPhone(String(liveRecord.id));
+            if (phoneNumber) liveRecord = { ...liveRecord, phoneNumber };
+          }
         }
         if (!isMounted) return;
         if (liveRecord.status === 'inactive') {
@@ -264,6 +270,7 @@ export default function App() {
       return () => {
         isMounted = false;
         unsubscribeRealtime?.();
+        if (importRefreshTimer) clearTimeout(importRefreshTimer);
         unsubscribeAuth();
         window.removeEventListener('online', handleOnline);
         window.removeEventListener('offline', handleOffline);
