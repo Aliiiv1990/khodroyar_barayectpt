@@ -17,9 +17,10 @@ function imageDataUrlToFile(dataUrl: string, fileName: string): File | null {
   const binary = atob(match[2].replace(/\s+/g, ''));
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  const safeName = fileName.split(/[\\/]/).pop()?.replace(/[^\w.\-\u0600-\u06FF]/g, '_') || 'vehicle-photo';
+  const rawName = fileName.split(/[\\/]/).pop() || 'vehicle-photo';
+  const safeName = rawName.replace(/\.[^.]+$/, '').replace(/[^\w\-\u0600-\u06FF]/g, '_') || 'vehicle-photo';
   const extension = mimeType.split('/')[1].replace('jpeg', 'jpg');
-  return new File([bytes], safeName.includes('.') ? safeName : safeName + '.' + extension, { type: mimeType });
+  return new File([bytes], safeName + '.' + extension, { type: mimeType });
 }
 
 async function listingFiles(listing: CarListing): Promise<File[]> {
