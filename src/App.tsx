@@ -151,10 +151,11 @@ export default function App() {
     sessionStorage.removeItem('car_session_role_v2');
     localStorage.removeItem('car_user_role');
     localStorage.removeItem('car_colleague_unlocked');
-    void fetch('/api/auth/logout', {
-      method: 'POST',
-      credentials: 'same-origin',
-    }).catch(() => undefined);
+    if (USE_POCKETBASE) {
+      pocketbase.authStore.clear();
+    } else {
+      void fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => undefined);
+    }
   }, []);
 
   const handleToggleColleagueLock = useCallback(() => {
