@@ -236,7 +236,7 @@ export const pocketbaseListings = {
     }
     return await this.update(String(listing.id), { ...listing, revision: Number(existing.revision || 1) }, files);
   },
-  async remove(recordId: string): Promise<void> {
+  async remove(recordId: string, writeAudit = true): Promise<void> {
     let existing: RecordModel;
     try {
       existing = await pocketbase.collection('listings').getFirstListItem(
@@ -256,7 +256,7 @@ export const pocketbaseListings = {
     }
     if (contact) await pocketbase.collection('listing_contacts').delete(contact.id);
     await pocketbase.collection('listings').delete(existing.id);
-    void writePocketBaseAudit('delete', recordId, 'Listing permanently deleted');
+    if (writeAudit) void writePocketBaseAudit('delete', recordId, 'Listing permanently deleted');
   },
 
   async listBatches(): Promise<Array<{ id: string; batchName: string; date: string; count: number; saleCount: number; buyCount: number; isVisible: boolean }>> {
@@ -315,7 +315,7 @@ export const pocketbaseListings = {
     const worker = async () => {
       while (cursor < records.length) {
         const index = cursor++;
-        await this.remove(String(records[index].legacy_id || records[index].id));
+        await this.remove(String(records[index].legacy_id || records[index].id), false);
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, records.length) }, () => worker()));
