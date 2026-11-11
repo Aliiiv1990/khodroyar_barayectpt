@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import JSZip from 'jszip';
-import unzipper from 'unzipper';
+import { Open as unzipperOpen } from 'unzipper';
 import { Pool, type PoolClient } from 'pg';
 import PocketBase from 'pocketbase';
 import {
@@ -1783,8 +1783,8 @@ async function extractZipDirectlyToDisk(
   const imagesDir = pocketBaseToken ? path.join(getUploadsDir(), 'pb-import-' + Date.now()) : getImagesDir();
   await fs.promises.mkdir(imagesDir, { recursive: true });
   const loadedZip = typeof zipSource === 'string'
-    ? await unzipper.Open.file(zipSource)
-    : await unzipper.Open.buffer(zipSource);
+    ? await unzipperOpen.file(zipSource)
+    : await unzipperOpen.buffer(zipSource);
 
   const textMap = new Map<string, string>();
   const jsonFiles: any[] = [];
