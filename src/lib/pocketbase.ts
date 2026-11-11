@@ -191,6 +191,85 @@ export const pocketbaseListings = {
     await pocketbase.collection('listings').delete(existing.id);
   },
 
+  async listBatches(): Promise<Array<{ id: string; batchName: string; date: string; count: number; saleCount: number; buyCount: number; isVisible: boolean }>> {
+    const [records, batches] = await Promise.all([
+      pocketbase.collection('listings').getFullList({ fields: 'legacy_id,import_batch,type,is_active,created' }),
+      pocketbase.collection('import_batches').getFullList({ sort: '-created' }),
+    ]);
+    const grouped = new Map<string, { count: number; saleCount: number; buyCount: number; visibleCount: number; date: string }>();
+    for (const record of records) {
+      const name = String(record.import_batch || 'ثبت‌های دستی همکاران و مدیر');
+      const item = grouped.get(name) || { count: 0, saleCount: 0, buyCount: 0, visibleCount: 0, date: String(record.created || '') };
+      item.count += 1;
+      if (record.type === 'buy_request') item.buyCount += 1; else item.saleCount += 1;
+      if (record.is_active !== false) item.visibleCount += 1;
+      grouped.set(name, item);
+    }
+    const names = new Set<string>([...grouped.keys(), ...batches.map((batch) => String(batch.batch_name || ''))]);
+    return Array.from(names).filter(Boolean).map((name) => {
+      const stats = grouped.get(name) || { count: 0, saleCount: 0, buyCount: 0, visibleCount: 0, date: '' };
+      const batch = batches.find((item) => String(item.batch_name) === name);
+      return {
+        id: String(batch?.id || name), batchName: name,
+        date: String(batch?.created || stats.date || new Date().toISOString()),
+        count: Number(batch?.record_count || stats.count),
+        saleCount: stats.saleCount, buyCount: stats.buyCount,
+        isVisible: stats.count === 0 ? true : stats.visibleCount === stats.count,
+      };
+    }).sort((left, right) => right.date.localeCompare(left.date));
+  },
+
+  async setBatchVisibility(batchName: string, visible: boolean): Promise<void> {
+    const records = await pocketbase.collection('listings').getFullList({
+      filter: pocketbase.filter('import_batch = {:batchName}', { batchName }),
+      fields: 'id,is_active',
+    });
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < records.length) {
+        const index = cursor++;
+        await pocketbase.collection('listings').update(records[index].id, { is_active: visible });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, records.length) }, () => worker()));
+  },
+
+  async deleteBatch(batchName: string): Promise<number> {
+    const records = await pocketbase.collection('listings').getFullList({
+      filter: pocketbase.filter('import_batch = {:batchName}', { batchName }),
+      fields: 'id,legacy_id',
+    });
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < records.length) {
+        const index = cursor++;
+        await this.remove(String(records[index].legacy_id || records[index].id));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, records.length) }, () => worker()));
+    try {
+      const batch = await pocketbase.collection('import_batches').getFirstListItem(
+        pocketbase.filter('batch_name = {:batchName}', { batchName }),
+      );
+      await pocketbase.collection('import_batches').delete(batch.id);
+    } catch { /* The import batch record may not exist for manually created listings. */ }
+    return records.length;
+  },
+
+  async clearAll(): Promise<number> {
+    const records = await pocketbase.collection('listings').getFullList({ fields: 'id,legacy_id' });
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < records.length) {
+        const index = cursor++;
+        await this.remove(String(records[index].legacy_id || records[index].id));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, records.length) }, () => worker()));
+    const batches = await pocketbase.collection('import_batches').getFullList({ fields: 'id' });
+    await Promise.all(batches.map((batch) => pocketbase.collection('import_batches').delete(batch.id)));
+    return records.length;
+  },
   async subscribe(onEvent: (event: PocketBaseListingEvent) => void): Promise<() => void> {
     const unsubscribe = await pocketbase.collection('listings').subscribe('*', (event) => {
       const record = event.record;
