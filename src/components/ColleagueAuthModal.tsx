@@ -11,6 +11,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { toPersianDigits } from '../utils/dataPruner';
+import { pocketbase } from '../lib/pocketbase';
 
 function toEnglishDigits(input: string): string {
   return String(input || '')
@@ -39,6 +40,10 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
   onOpenDataManager,
   promptMessage,
 }) => {
+  const isPocketBaseEnabled = Boolean(import.meta.env.VITE_POCKETBASE_URL?.trim());
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
   const [pin, setPin] = useState('');
   const [error, setError] = useState(false);
   const [showPinEntryWhileLogged, setShowPinEntryWhileLogged] = useState(false);
@@ -48,6 +53,9 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setPin('');
+      setEmail('');
+      setPassword('');
+      setAuthError('');
       setError(false);
       setShowPinEntryWhileLogged(false);
       setIsChecking(false);
@@ -81,6 +89,27 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
     }
   }, [isChecking, onClose, onSuccess]);
 
+  const handlePocketBaseLogin = useCallback(async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (isChecking || !email.trim() || !password) return;
+    setIsChecking(true);
+    setAuthError('');
+    try {
+      const auth = await pocketbase.collection('users').authWithPassword(email.trim(), password);
+      const role = auth.record.role;
+      if (role !== 'admin' && role !== 'colleague') {
+        pocketbase.authStore.clear();
+        throw new Error('حساب کاربری نقش معتبر ندارد.');
+      }
+      setPassword('');
+      onSuccess(role);
+      onClose();
+    } catch {
+      setAuthError('ایمیل یا گذرواژه معتبر نیست، یا حساب کاربری غیرفعال است.');
+    } finally {
+      setIsChecking(false);
+    }
+  }, [email, password, isChecking, onClose, onSuccess]);
   const handleDigitInput = useCallback(
     (rawDigit: string) => {
       const digit = toEnglishDigits(rawDigit);
@@ -279,8 +308,29 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
           </div>
         ) : null}
 
-        {/* Keypad View (When Guest or Switching Role) */}
-        {showKeypad && (
+        {/* PocketBase native account login. Keep the existing modal layout. */}
+        {showKeypad && isPocketBaseEnabled && (
+          <form onSubmit={handlePocketBaseLogin} className="mt-4 space-y-3">
+            <p className="text-xs text-slate-600 dark:text-slate-300 text-center leading-relaxed font-medium">
+              با حساب کاربری اختصاصی خود وارد شوید.
+            </p>
+            <label className="block space-y-1.5">
+              <span className="text-xs font-bold text-slate-600 dark:text-slate-300">ایمیل حساب</span>
+              <input type="email" dir="ltr" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0c1017] px-3 py-3 text-sm outline-none focus:border-blue-500" placeholder="name@example.com" required />
+            </label>
+            <label className="block space-y-1.5">
+              <span className="text-xs font-bold text-slate-600 dark:text-slate-300">گذرواژه</span>
+              <input type="password" dir="ltr" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0c1017] px-3 py-3 text-sm outline-none focus:border-blue-500" placeholder="گذرواژه حساب" required />
+            </label>
+            {authError && <div className="rounded-xl border border-red-200 dark:border-red-800/60 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-center text-xs font-bold text-red-700 dark:text-red-300">{authError}</div>}
+            <button type="submit" disabled={isChecking || !email.trim() || !password} className="w-full rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 py-3 text-sm font-black text-white transition-colors">
+              {isChecking ? 'در حال بررسی حساب…' : 'ورود امن'}
+            </button>
+          </form>
+        )}
+
+        {/* Legacy PIN login remains available until PocketBase is configured. */}
+        {showKeypad && !isPocketBaseEnabled && (
           <div className="mt-3">
             <p className="text-xs text-slate-600 dark:text-slate-300 mb-3 text-center leading-relaxed font-medium">
               {promptMessage || 'لطفاً رمز ۴ رقمی خود را وارد نمایید:'}
