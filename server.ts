@@ -1836,6 +1836,7 @@ async function extractZipDirectlyToDisk(
 
   for (const jFile of jsonFiles) {
     try {
+      if (Number(jFile.uncompressedSize || 0) > 50 * 1024 * 1024) throw new Error('حجم فایل JSON از سقف ۵۰ مگابایت بیشتر است.');
       const fileNameLower = jFile.path.toLowerCase();
       const isDedicatedBuyerFile = /buyer|kharidar|kharid|order|request|moshtari|خریدار|خرید|سفارش|مشتری|درخواست/i.test(fileNameLower);
       const isDedicatedSellerFile = /seller|forush|sale|froosh|فروش|فروشنده/i.test(fileNameLower);
@@ -1908,6 +1909,7 @@ async function extractZipDirectlyToDisk(
   // Extract entries directly to disk and memory index without Base64 strings in memory
   for (const { name, baseName, idWithoutExt, entry } of dataEntries) {
     try {
+      if (Number(entry.uncompressedSize || 0) > 50 * 1024 * 1024) throw new Error('حجم یک فایل داخل ZIP از سقف ۵۰ مگابایت بیشتر است: ' + name);
       const lowerBase = baseName.toLowerCase();
       const nodeBuffer = await entry.buffer();
       if (!nodeBuffer || nodeBuffer.length === 0) continue;
