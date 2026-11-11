@@ -423,7 +423,7 @@ let postgresDirty = false;
 let postgresLastLoadedVersion = '';
 
 const pgConnectionString = process.env.PG_URI || process.env.DATABASE_URL || '';
-const postgresPool: Pool | null = pgConnectionString
+const postgresPool: Pool | null = pgConnectionString && !process.env.POCKETBASE_URL
   ? new Pool({
       connectionString: pgConnectionString,
       max: Math.max(2, Math.min(10, Number(process.env.PG_POOL_MAX) || 5)),
@@ -681,6 +681,13 @@ async function persistPostgresSnapshot(client: PoolClient): Promise<void> {
 }
 
 async function initializePostgresStore(): Promise<void> {
+  if (process.env.POCKETBASE_URL) {
+    if (isProd && !fs.existsSync('/data')) {
+      throw new Error('PocketBase import processing requires the Node app persistent disk mounted at /data.');
+    }
+    console.log('Database backend: PocketBase (native database, auth, file storage and realtime)');
+    return;
+  }
   if (isProd && !isAuthConfigured()) {
     throw new Error(
       'Secure server authentication is required in production. Configure distinct 4-digit ADMIN_PIN and COLLEAGUE_PIN values plus a random SESSION_SECRET of at least 32 characters.'
