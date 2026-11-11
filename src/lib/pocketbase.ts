@@ -170,15 +170,18 @@ export const pocketbaseListings = {
     );
     const record = await pocketbase.collection('listings').update(existing.id, toFormData(listing, files));
     if (listing.phoneNumber !== undefined && pocketbase.authStore.isValid) {
+      let contact: RecordModel | null = null;
       try {
-        const contact = await pocketbase.collection('listing_contacts').getFirstListItem(
+        contact = await pocketbase.collection('listing_contacts').getFirstListItem(
           pocketbase.filter('listing_id = {:listingId}', { listingId: recordId }),
         );
+      } catch (error: any) {
+        if (error?.status !== 404) throw error;
+      }
+      if (contact) {
         await pocketbase.collection('listing_contacts').update(contact.id, { phone_number: listing.phoneNumber });
-      } catch {
-        if (listing.phoneNumber) {
-          await pocketbase.collection('listing_contacts').create({ listing_id: recordId, phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.model?.id || '') });
-        }
+      } else if (listing.phoneNumber) {
+        await pocketbase.collection('listing_contacts').create({ listing_id: recordId, phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.record?.id || '') });
       }
     }
     return { ...fromPocketBaseRecord(record), phoneNumber: listing.phoneNumber ?? '' };
@@ -199,14 +202,15 @@ export const pocketbaseListings = {
     const existing = await pocketbase.collection('listings').getFirstListItem(
       pocketbase.filter('legacy_id = {:legacyId}', { legacyId: recordId }),
     );
+    let contact: RecordModel | null = null;
     try {
-      const contact = await pocketbase.collection('listing_contacts').getFirstListItem(
+      contact = await pocketbase.collection('listing_contacts').getFirstListItem(
         pocketbase.filter('listing_id = {:listingId}', { listingId: recordId }),
       );
-      await pocketbase.collection('listing_contacts').delete(contact.id);
-    } catch {
-      // A listing may not have a private contact record.
+    } catch (error: any) {
+      if (error?.status !== 404) throw error;
     }
+    if (contact) await pocketbase.collection('listing_contacts').delete(contact.id);
     await pocketbase.collection('listings').delete(existing.id);
   },
 
