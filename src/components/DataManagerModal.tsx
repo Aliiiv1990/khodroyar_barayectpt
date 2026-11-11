@@ -301,6 +301,26 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     setIsVerifyingIntegrity(true);
     setIntegrityReport(null);
     try {
+      if (USE_POCKETBASE) {
+        const records = await pocketbaseListings.list();
+        const ids = records.map((item) => String(item.id));
+        const uniqueIds = new Set(ids);
+        const batches = records.reduce<Record<string, number>>((result, item) => {
+          const name = item.importBatchName || 'ثبت‌های دستی همکاران و مدیر';
+          result[name] = (result[name] || 0) + 1;
+          return result;
+        }, {});
+        setIntegrityReport({
+          success: uniqueIds.size === records.length && records.every((item) => Boolean(item.title && item.id)),
+          totalListings: records.length,
+          salesCount: records.filter((item) => item.type === 'sale').length,
+          buysCount: records.filter((item) => item.type === 'buy_request').length,
+          revision: Math.max(0, ...records.map((item) => Number(item.revision || 0))),
+          batches,
+          error: uniqueIds.size !== records.length ? 'شناسه تکراری در فهرست مشاهده شد.' : undefined,
+        });
+        return;
+      }
       const res = await verifyServerIntegrity();
       if (res) {
         setIntegrityReport(res);
@@ -874,6 +894,11 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
   };
 
   const handleRegenerate5000 = async () => {
+    if (USE_POCKETBASE) {
+      setImportStatus('ساخت داده آزمایشی محلی در حالت PocketBase غیرفعال است تا اطلاعات واقعی مخلوط نشوند.');
+      setIsSuccess(false);
+      return;
+    }
     const fresh = generateRealisticCarListings(5000);
     const { prunedListings } = pruneOldListings(fresh);
     setStorageExplicitlyCleared(false);
