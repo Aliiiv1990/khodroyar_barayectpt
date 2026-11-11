@@ -45,7 +45,6 @@ migrate((app) => {
       { name: "body_condition", type: "text", max: 120 },
       { name: "fuel_type", type: "text", max: 80 },
       { name: "city", type: "text", max: 120 },
-      { name: "phone_number", type: "text", max: 40 },
       { name: "description", type: "text", max: 5000 },
       { name: "source", type: "select", maxSelect: 1, values: ["admin", "user"] },
       { name: "creator_name", type: "text", max: 120 },
@@ -55,6 +54,7 @@ migrate((app) => {
       { name: "is_edited", type: "bool" },
       { name: "is_active", type: "bool" },
       { name: "revision", type: "number" },
+      { name: "created_by", type: "text", max: 64 },
       { name: "photos", type: "file", maxSelect: 20, maxSize: 12582912, mimeTypes: ["image/jpeg", "image/png", "image/webp", "image/avif"] },
     ],
     indexes: [
@@ -66,6 +66,22 @@ migrate((app) => {
     ],
   });
   app.save(listings);
+
+  const contacts = new Collection({
+    name: "listing_contacts",
+    type: "base",
+    listRule: '@request.auth.id != ""',
+    viewRule: '@request.auth.id != ""',
+    createRule: '@request.auth.id != ""',
+    updateRule: '@request.auth.role = "admin" || @request.auth.id != ""',
+    deleteRule: '@request.auth.role = "admin"',
+    fields: [
+      { name: "listing_id", type: "text", required: true, max: 160 },
+      { name: "phone_number", type: "text", max: 40 },
+    ],
+    indexes: ["CREATE UNIQUE INDEX idx_listing_contacts_listing_id ON listing_contacts (listing_id)"],
+  });
+  app.save(contacts);
 
   const batches = new Collection({
     name: "import_batches",
@@ -106,7 +122,7 @@ migrate((app) => {
   });
   return app.save(audit);
 }, (app) => {
-  for (const name of ["audit_logs", "import_batches", "listings", "users"]) {
+  for (const name of ["audit_logs", "import_batches", "listing_contacts", "listings", "users"]) {
     try { app.delete(app.findCollectionByNameOrId(name)); } catch (_) {}
   }
 });
