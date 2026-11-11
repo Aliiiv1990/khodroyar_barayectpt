@@ -23,26 +23,17 @@ function imageDataUrlToFile(dataUrl: string, fileName: string): File | null {
 }
 
 async function listingFiles(listing: CarListing): Promise<File[]> {
-  const candidates = [listing.imageFullBase64, listing.imageThumbnailBase64]
-    .filter((value): value is string => Boolean(value && value.startsWith('data:image/') && !value.startsWith('data:image/svg+xml')))
-    .filter((value, index, all) => all.indexOf(value) === index);
-  const files: File[] = [];
-  for (let index = 0; index < candidates.length; index += 1) {
-    const optimized = await optimizeImageForUpload(
-      candidates[index],
-      index === 0 ? 1280 : 420,
-      index === 0 ? 960 : 315,
-      index === 0 ? 0.84 : 0.72,
-    );
-    const file = imageDataUrlToFile(
-      optimized,
-      listing.imageFileName || (String(listing.id) + (index === 0 ? '-full' : '-thumb') + '.jpg'),
-    );
-    if (file) files.push(file);
-  }
-  return files;
+  const candidate = [listing.imageFullBase64, listing.imageThumbnailBase64].find(
+    (value): value is string => Boolean(value && value.startsWith('data:image/') && !value.startsWith('data:image/svg+xml')),
+  );
+  if (!candidate) return [];
+  const optimized = await optimizeImageForUpload(candidate, 1600, 1200, 0.84);
+  const file = imageDataUrlToFile(
+    optimized,
+    listing.imageFileName || String(listing.id) + '.jpg',
+  );
+  return file ? [file] : [];
 }
-
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 async function ensureImportBatch(batchName: string, total: number, sourceFile: string) {
