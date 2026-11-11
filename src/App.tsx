@@ -279,6 +279,7 @@ export default function App() {
         void refreshPocketBase();
         restartRealtimeSubscription();
       });
+      const guestRefreshInterval = setInterval(() => { if (!pocketbase.authStore.isValid) void refreshPocketBase(); }, 60000);
       const handleOnline = () => { setIsOffline(false); void refreshPocketBase(); };
       const handleOffline = () => setIsOffline(true);
       const handleVisible = () => { if (document.visibilityState === 'visible') void refreshPocketBase(); };
@@ -289,6 +290,7 @@ export default function App() {
         isMounted = false;
         if (unsubscribeRealtime) void unsubscribeRealtime().catch((error) => console.warn('PocketBase realtime cleanup failed:', error));
         if (importRefreshTimer) clearTimeout(importRefreshTimer);
+        clearInterval(guestRefreshInterval);
         unsubscribeAuth();
         window.removeEventListener('online', handleOnline);
         window.removeEventListener('offline', handleOffline);
