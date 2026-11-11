@@ -383,7 +383,7 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     try {
       if (USE_POCKETBASE) {
         const health = await checkLiaraHealth(8000);
-        if (!health.ok || !health.data) throw new Error(health.message);
+        if (!health.ok || !health.data || (health.data as any).dbBackend !== 'pocketbase') throw new Error('سرویس PocketBase به برنامه Node متصل نشده است؛ متغیر POCKETBASE_URL را بررسی کنید.');
         setLiaraHealth(health.data);
         return;
       }
