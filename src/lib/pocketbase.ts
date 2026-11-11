@@ -253,6 +253,21 @@ export const pocketbaseListings = {
     return { ...fromPocketBaseRecord(finalRecord), phoneNumber: listing.phoneNumber ?? '' };
   },
 
+  async upsertImported(listing: CarListing, files: File[] = []): Promise<CarListing> {
+    let existing: RecordModel;
+    try {
+      existing = await pocketbase.collection('listings').getFirstListItem(
+        pocketbase.filter('legacy_id = {:legacyId}', { legacyId: listing.id }),
+      );
+    } catch (error: any) {
+      if (error?.status !== 404) throw error;
+      return await this.create(listing, files);
+    }
+    if (existing.is_edited === true && !listing.isEdited) {
+      return { ...fromPocketBaseRecord(existing), phoneNumber: await this.getContactPhone(String(listing.id)) };
+    }
+    return await this.update(String(listing.id), { ...listing, revision: Number(existing.revision || 1) }, files);
+  },
   async upsert(listing: CarListing, files: File[] = []): Promise<CarListing> {
     let existing: RecordModel;
     try {
