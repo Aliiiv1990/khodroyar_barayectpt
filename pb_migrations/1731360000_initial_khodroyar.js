@@ -27,7 +27,7 @@ migrate((app) => {
     viewRule: "is_active = true || @request.auth.role = \"admin\"",
     createRule: '@request.auth.id != "" && @request.body.created_by = @request.auth.id',
     updateRule: '@request.auth.id != "" && @request.body.revision > revision',
-    deleteRule: '@request.auth.id != ""',
+    deleteRule: '@request.auth.role = "admin" || created_by = @request.auth.id',
     fields: [
       { name: "legacy_id", type: "text", max: 160 },
       { name: "type", type: "select", required: true, maxSelect: 1, values: ["sale", "buy_request"] },
