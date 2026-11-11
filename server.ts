@@ -1769,6 +1769,17 @@ async function importParsedListingsToPocketBase(
     status: failed === 0 ? 'completed' : 'failed', record_count: listings.length, processed_count: processed,
     error_summary: errors.slice(0, 20).join('\\n').slice(0, 4500),
   });
+  try {
+    await pb.collection('audit_logs').create({
+      actor_id: userId,
+      action: 'zip_import',
+      collection_name: 'listings',
+      record_id: String(batch.id),
+      summary: 'ZIP import batch=' + batchName + '; saved=' + saved + '; failed=' + failed,
+    });
+  } catch (auditError) {
+    console.warn('[PocketBase] Could not write ZIP import audit entry:', auditError);
+  }
   if (failed > 0) throw new Error('بخشی از اطلاعات ثبت نشد (' + failed + ' مورد). اجرای دوباره همین ZIP امن است و رکورد تکراری ایجاد نمی‌کند. ' + errors.slice(0, 3).join(' | '));
   return { saved, failed, batchId: String(batch.id) };
 }
