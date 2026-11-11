@@ -1755,7 +1755,8 @@ interface ChunkUploadSession {
 async function extractZipDirectlyToDisk(
   zipBuffer: Buffer,
   customBatchName?: string,
-  publishedBy = 'مدیر سیستم'
+  publishedBy = 'مدیر سیستم',
+  pocketBaseToken?: string
 ): Promise<{
   success: boolean;
   message: string;
@@ -1771,7 +1772,8 @@ async function extractZipDirectlyToDisk(
   revision: number;
   lastUpdated: string;
 }> {
-  const imagesDir = getImagesDir();
+  const imagesDir = pocketBaseToken ? path.join(getUploadsDir(), 'pb-import-' + Date.now()) : getImagesDir();
+  await fs.promises.mkdir(imagesDir, { recursive: true });
   const zip = new JSZip();
   const loadedZip = await zip.loadAsync(zipBuffer);
 
@@ -2044,6 +2046,26 @@ async function extractZipDirectlyToDisk(
     item.imageFullBase64 = '';
   }
 
+  if (pocketBaseToken) {
+    const imported = await importParsedListingsToPocketBase(result.listings, batchName, pocketBaseToken, imagesDir, savedImagesCount);
+    await fs.promises.rm(imagesDir, { recursive: true, force: true });
+    const timestamp = new Date().toISOString();
+    return {
+      success: true,
+      message: 'فایل با موفقیت در PocketBase ثبت شد: ' + result.sellersCount + ' خودرو، ' + result.buyersCount + ' درخواست خرید و ' + savedImagesCount + ' عکس.',
+      total: imported.saved,
+      batchCount: result.listings.length,
+      sourceRecordsCount,
+      skippedRecordsCount,
+      errorsCount: result.errorsCount,
+      sellersCount: result.sellersCount,
+      buyersCount: result.buyersCount,
+      extractedImagesCount: savedImagesCount,
+      batchName,
+      revision: 1,
+      lastUpdated: timestamp,
+    };
+  }
   // Preserve other batches
   const otherBatches = memoryDb.listings.filter((l) => (l.importBatchName || '') !== batchName);
   const combined = [...result.listings, ...otherBatches];
