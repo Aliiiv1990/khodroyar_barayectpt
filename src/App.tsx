@@ -162,14 +162,25 @@ export default function App() {
     setIsAuthModalOpen(true);
   }, []);
 
-  // A browser tab role is only a UI hint. Restore permissions from the server's
-  // HttpOnly signed session cookie on every page load.
+  // Restore the native PocketBase auth record when the PocketBase backend is selected.
   useEffect(() => {
+    if (USE_POCKETBASE) {
+      const applyRole = (record: { role?: string } | null) => {
+        const role = record?.role;
+        if (role === 'admin' || role === 'colleague') {
+          setUserRole(role);
+          sessionStorage.setItem('car_session_role_v2', role);
+        } else {
+          setUserRole('guest');
+          sessionStorage.removeItem('car_session_role_v2');
+        }
+      };
+      applyRole(pocketbase.authStore.record as { role?: string } | null);
+      const unsubscribe = pocketbase.authStore.onChange((_token, record) => applyRole(record as { role?: string } | null));
+      return () => unsubscribe();
+    }
     let active = true;
-    fetch('/api/auth/session', {
-      credentials: 'same-origin',
-      cache: 'no-store',
-    })
+    fetch('/api/auth/session', { credentials: 'same-origin', cache: 'no-store' })
       .then(async (response) => (response.ok ? response.json() : null))
       .then((session) => {
         if (!active) return;
@@ -186,12 +197,8 @@ export default function App() {
         setUserRole('guest');
         sessionStorage.removeItem('car_session_role_v2');
       });
-
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, []);
-
   // Centralized Data Loader:
   // 1. Immediately renders local cache so UI is instantaneous.
   // 2. Immediately fetches from Liara Server (/api/listings) so EVERY device/phone receives the admin's database.
