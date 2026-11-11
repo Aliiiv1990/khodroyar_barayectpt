@@ -838,6 +838,16 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
   const handlePruneNow = async () => {
     const { prunedListings, removedCount } = pruneOldListings(listings);
+    if (USE_POCKETBASE) {
+      const keepIds = new Set(prunedListings.map((item) => String(item.id)));
+      const expired = listings.filter((item) => !keepIds.has(String(item.id)));
+      for (const item of expired) await pocketbaseListings.remove(String(item.id));
+      onUpdateListings(prunedListings);
+      setImportStatus('پاکسازی انجام شد؛ ' + toPersianDigits(removedCount) + ' آگهی قدیمی از PocketBase حذف شد.');
+      setIsSuccess(true);
+      await loadBatches();
+      return;
+    }
     await saveListingsToIndexedDB(prunedListings);
     onUpdateListings(prunedListings);
     setImportStatus(
