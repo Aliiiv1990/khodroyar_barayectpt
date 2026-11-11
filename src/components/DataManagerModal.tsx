@@ -804,6 +804,22 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
   // Clear all listings (both locally and on Liara server)
   const handleConfirmClearAll = async () => {
+    if (USE_POCKETBASE) {
+      try {
+        const removed = await pocketbaseListings.clearAll();
+        setStorageExplicitlyCleared(true);
+        onUpdateListings([]);
+        setShowClearConfirm(false);
+        setImportStatus('تمامی ' + toPersianDigits(removed) + ' رکورد و فایل‌های وابسته از PocketBase حذف شدند.');
+        setIsSuccess(true);
+        await handleCheckLiara();
+        await loadBatches();
+      } catch (error: any) {
+        setImportStatus('پاکسازی کامل انجام نشد: ' + (error?.message || 'خطای سرور'));
+        setIsSuccess(false);
+      }
+      return;
+    }
     await clearIndexedDBListings();
     setStorageExplicitlyCleared(true);
     onUpdateListings([]);
