@@ -548,6 +548,20 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
       (window as any).__isSyncingToLiara = true;
     }
     try {
+      if (USE_POCKETBASE) {
+        const result = await publishListingsToPocketBase(targetListings, targetTitle, (progress) => {
+          setPublishProgress(progress.percent);
+          setImportStatus('در حال ثبت در PocketBase: ' + toPersianDigits(progress.processed) + ' از ' + toPersianDigits(progress.total) + ' رکورد (' + toPersianDigits(progress.percent) + '٪)');
+        }, targetTitle);
+        const refreshed = await pocketbaseListings.list();
+        onUpdateListings(refreshed);
+        setImportStatus('ثبت در PocketBase کامل شد: ' + toPersianDigits(result.saved) + ' رکورد در بسته «' + targetTitle + '».');
+        setIsSuccess(true);
+        if (newlyImportedBatch && targetTitle === newlyImportedBatch.batchName) setNewlyImportedBatch(null);
+        await handleCheckLiara();
+        await loadBatches();
+        return;
+      }
       const res = await publishListingsToLiara(
         targetListings,
         true, // Safe append/merge mode! Never wipe previous batches
