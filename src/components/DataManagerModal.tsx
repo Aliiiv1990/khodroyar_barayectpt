@@ -243,6 +243,27 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     setImportStatus(USE_POCKETBASE ? `در حال آپلود و ثبت فایل ${file.name} در PocketBase...` : `در حال آپلود و ذخیره فایل ${file.name} در دیسک دائمی لیارا...`);
     setIsSuccess(false);
 
+    let importProgressPoll: ReturnType<typeof setInterval> | null = null;
+    if (USE_POCKETBASE) {
+      importProgressPoll = setInterval(async () => {
+        try {
+          const batch = await pocketbase.collection('import_batches').getFirstListItem(
+            pocketbase.filter('batch_name = {:batchName}', { batchName: file.name }),
+          );
+          const total = Number(batch.record_count || 0);
+          const processed = Number(batch.processed_count || 0);
+          if (total > 0) {
+            const percent = Math.min(99, 95 + Math.floor((processed / total) * 4));
+            setZipDirectProgress(percent);
+            setImportStatus('در حال ثبت تصاویر و رکوردها در PocketBase: ' + toPersianDigits(processed) + ' از ' + toPersianDigits(total));
+          }
+          if (batch.status === 'failed') setImportStatus('بخشی از اطلاعات ثبت نشده؛ همان فایل را دوباره انتخاب کنید تا ادامه یابد.');
+        } catch {
+          // The import batch appears after ZIP validation and extraction begins.
+        }
+      }, 1800);
+    }
+
     try {
       const res = await uploadZipFileToLiara(file, file.name, (p, msg) => {
         setZipDirectProgress(p);
@@ -270,6 +291,7 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
       setIsSuccess(false);
       setImportStatus(`خطا در آپلود: ${err.message || 'مشکل در ارتباط با سرور'}`);
     } finally {
+      if (importProgressPoll) clearInterval(importProgressPoll);
       setIsUploadingZipDirect(false);
       if (zipDirectFileInputRef.current) zipDirectFileInputRef.current.value = '';
     }
