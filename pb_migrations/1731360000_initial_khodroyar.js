@@ -23,8 +23,8 @@ migrate((app) => {
   const listings = new Collection({
     name: "listings",
     type: "base",
-    listRule: "is_active = true || @request.auth.role = \"admin\"",
-    viewRule: "is_active = true || @request.auth.role = \"admin\"",
+    listRule: "is_active = true || @request.auth.id != \"\"",
+    viewRule: "is_active = true || @request.auth.id != \"\"",
     createRule: '@request.auth.id != "" && @request.body.created_by = @request.auth.id',
     updateRule: '@request.auth.id != "" && @request.body.revision > revision && @request.body.created_by = created_by',
     deleteRule: '@request.auth.role = "admin" || created_by = @request.auth.id',
