@@ -10,6 +10,22 @@ if (!configuredUrl && import.meta.env.PROD) {
 export const pocketbase = new PocketBase(configuredUrl || 'http://127.0.0.1:8090');
 pocketbase.autoCancellation(false);
 
+async function writePocketBaseAudit(action: string, recordId: string, summary: string): Promise<void> {
+  const actorId = String(pocketbase.authStore.record?.id || '');
+  if (!actorId) return;
+  try {
+    await pocketbase.collection('audit_logs').create({
+      actor_id: actorId,
+      action,
+      collection_name: 'listings',
+      record_id: recordId,
+      summary: summary.slice(0, 1000),
+    });
+  } catch (error) {
+    console.warn('[PocketBase] Could not write audit entry:', error);
+  }
+}
+
 function requirePocketBaseAdmin(): void {
   if (!pocketbase.authStore.isValid || pocketbase.authStore.record?.role !== 'admin') {
     throw new Error('این عملیات فقط برای مدیر سامانه مجاز است.');
@@ -163,6 +179,7 @@ export const pocketbaseListings = {
       const syncedRecord = await pocketbase.collection('listings').update(record.id, { revision: Number(record.revision || 1) + 1 });
       return { ...fromPocketBaseRecord(syncedRecord), phoneNumber: listing.phoneNumber || '' };
     }
+    void writePocketBaseAudit('create', String(listing.id), 'Listing created');
     return { ...fromPocketBaseRecord(record), phoneNumber: listing.phoneNumber || '' };
   },
 
@@ -202,6 +219,7 @@ export const pocketbaseListings = {
       }
       finalRecord = await pocketbase.collection('listings').update(record.id, { revision: Number(record.revision || currentRevision + 1) + 1 });
     }
+    void writePocketBaseAudit('update', recordId, 'Listing updated');
     return { ...fromPocketBaseRecord(finalRecord), phoneNumber: listing.phoneNumber ?? '' };
   },
 
@@ -237,6 +255,7 @@ export const pocketbaseListings = {
     }
     if (contact) await pocketbase.collection('listing_contacts').delete(contact.id);
     await pocketbase.collection('listings').delete(existing.id);
+    void writePocketBaseAudit('delete', recordId, 'Listing permanently deleted');
   },
 
   async listBatches(): Promise<Array<{ id: string; batchName: string; date: string; count: number; saleCount: number; buyCount: number; isVisible: boolean }>> {
