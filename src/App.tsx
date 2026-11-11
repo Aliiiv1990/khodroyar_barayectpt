@@ -206,6 +206,61 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
     let lastSeenServerTimestamp = '';
+    if (USE_POCKETBASE) {
+      let unsubscribeRealtime: (() => void) | null = null;
+      const refreshPocketBase = async () => {
+        try {
+          const fresh = await pocketbaseListings.list();
+          if (!isMounted) return;
+          setListings(fresh);
+          setIsOffline(false);
+          setLastSyncTime(new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }));
+        } catch (error) {
+          console.error('PocketBase catalogue load failed:', error);
+          if (typeof navigator !== 'undefined' && !navigator.onLine) setIsOffline(true);
+        }
+      };
+      void refreshPocketBase();
+      void pocketbaseListings.subscribe((event) => {
+        if (!isMounted) return;
+        if (event.action === 'delete') {
+          setListings((previous) => previous.filter((item) => String(item.id) !== event.recordId));
+          setSelectedListing((previous) => {
+            if (previous && String(previous.id) === event.recordId) { setIsDetailOpen(false); return null; }
+            return previous;
+          });
+          return;
+        }
+        if (!event.record) return;
+        setListings((previous) => {
+          const index = previous.findIndex((item) => String(item.id) === String(event.record?.id));
+          if (index < 0) return [event.record as CarListing, ...previous];
+          const next = [...previous];
+          next[index] = { ...next[index], ...event.record, phoneNumber: event.record?.phoneNumber || next[index].phoneNumber };
+          return next;
+        });
+        setSelectedListing((previous) => previous && String(previous.id) === String(event.record?.id)
+          ? ({ ...previous, ...event.record, phoneNumber: event.record?.phoneNumber || previous.phoneNumber } as CarListing)
+          : previous);
+      }).then((unsubscribe) => {
+        if (!isMounted) unsubscribe(); else unsubscribeRealtime = unsubscribe;
+      }).catch((error) => console.error('PocketBase realtime subscription failed:', error));
+      const unsubscribeAuth = pocketbase.authStore.onChange(() => { void refreshPocketBase(); });
+      const handleOnline = () => { setIsOffline(false); void refreshPocketBase(); };
+      const handleOffline = () => setIsOffline(true);
+      const handleVisible = () => { if (document.visibilityState === 'visible') void refreshPocketBase(); };
+      window.addEventListener('online', handleOnline);
+      window.addEventListener('offline', handleOffline);
+      document.addEventListener('visibilitychange', handleVisible);
+      return () => {
+        isMounted = false;
+        unsubscribeRealtime?.();
+        unsubscribeAuth();
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+        document.removeEventListener('visibilitychange', handleVisible);
+      };
+    }
 
     // Step 1: Render local cache immediately
     if (!isStorageExplicitlyCleared()) {
