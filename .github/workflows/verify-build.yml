@@ -9,7 +9,7 @@ concurrency:
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, fix/data-integrity-postgres-import]
   push:
     branches: [fix/data-integrity-postgres-import, feat/pocketbase-core]
 
