@@ -2047,8 +2047,12 @@ async function extractZipDirectlyToDisk(
   }
 
   if (pocketBaseToken) {
-    const imported = await importParsedListingsToPocketBase(result.listings, batchName, pocketBaseToken, imagesDir, savedImagesCount);
-    await fs.promises.rm(imagesDir, { recursive: true, force: true });
+    let imported: { saved: number; failed: number; batchId: string };
+    try {
+      imported = await importParsedListingsToPocketBase(result.listings, batchName, pocketBaseToken, imagesDir, savedImagesCount);
+    } finally {
+      await fs.promises.rm(imagesDir, { recursive: true, force: true }).catch(() => undefined);
+    }
     const timestamp = new Date().toISOString();
     return {
       success: true,
