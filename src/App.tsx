@@ -563,7 +563,7 @@ export default function App() {
     };
     if (USE_POCKETBASE) {
       try {
-        const saved = await pocketbaseListings.create(taggedListing);
+        const saved = await pocketbaseListings.upsert(taggedListing);
         setListings((previous) => [saved, ...previous.filter((item) => item.id !== saved.id)]);
       } catch (error) {
         console.error('PocketBase create failed:', error);
