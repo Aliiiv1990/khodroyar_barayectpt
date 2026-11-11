@@ -91,7 +91,6 @@ function toFormData(listing: Partial<CarListing>, files: File[] = []): FormData 
     is_edited: String(Boolean(listing.isEdited)),
     is_active: 'true',
     revision: String(Number(listing.revision || 1)),
-    created_by: String(pocketbase.authStore.model?.id || ''),
   };
   Object.entries(values).forEach(([key, value]) => form.append(key, value));
   files.forEach((file) => form.append('photos', file, file.name));
@@ -132,9 +131,11 @@ export const pocketbaseListings = {
   },
 
   async create(listing: CarListing, files: File[] = []): Promise<CarListing> {
-    const record = await pocketbase.collection('listings').create(toFormData(listing, files));
+    const payload = toFormData(listing, files);
+    payload.append('created_by', String(pocketbase.authStore.model?.id || ''));
+    const record = await pocketbase.collection('listings').create(payload);
     if (listing.phoneNumber && pocketbase.authStore.isValid) {
-      await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber });
+      await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.model?.id || '') });
     }
     return fromPocketBaseRecord(record);
   },
@@ -152,7 +153,7 @@ export const pocketbaseListings = {
         await pocketbase.collection('listing_contacts').update(contact.id, { phone_number: listing.phoneNumber });
       } catch {
         if (listing.phoneNumber) {
-          await pocketbase.collection('listing_contacts').create({ listing_id: recordId, phone_number: listing.phoneNumber });
+          await pocketbase.collection('listing_contacts').create({ listing_id: recordId, phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.model?.id || '') });
         }
       }
     }
