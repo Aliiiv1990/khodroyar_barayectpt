@@ -160,6 +160,8 @@ export const pocketbaseListings = {
     const record = await pocketbase.collection('listings').create(payload);
     if (listing.phoneNumber && pocketbase.authStore.isValid) {
       await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.record?.id || '') });
+      const syncedRecord = await pocketbase.collection('listings').update(record.id, { revision: Number(record.revision || 1) + 1 });
+      return { ...fromPocketBaseRecord(syncedRecord), phoneNumber: listing.phoneNumber || '' };
     }
     return { ...fromPocketBaseRecord(record), phoneNumber: listing.phoneNumber || '' };
   },
@@ -177,6 +179,7 @@ export const pocketbaseListings = {
       existing.id,
       toFormData({ ...listing, revision: currentRevision + 1 }, files),
     );
+    let finalRecord = record;
     if (listing.phoneNumber !== undefined && pocketbase.authStore.isValid) {
       let contact: RecordModel | null = null;
       try {
@@ -191,8 +194,9 @@ export const pocketbaseListings = {
       } else if (listing.phoneNumber) {
         await pocketbase.collection('listing_contacts').create({ listing_id: recordId, phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.record?.id || '') });
       }
+      finalRecord = await pocketbase.collection('listings').update(record.id, { revision: Number(record.revision || currentRevision + 1) + 1 });
     }
-    return { ...fromPocketBaseRecord(record), phoneNumber: listing.phoneNumber ?? '' };
+    return { ...fromPocketBaseRecord(finalRecord), phoneNumber: listing.phoneNumber ?? '' };
   },
 
   async upsert(listing: CarListing, files: File[] = []): Promise<CarListing> {
