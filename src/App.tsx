@@ -260,7 +260,7 @@ export default function App() {
           : previous);
       };
       const restartRealtimeSubscription = () => {
-        subscriptionQueue = subscriptionQueue.then(async () => {
+        subscriptionQueue = subscriptionQueue.catch(() => undefined).then(async () => {
           if (unsubscribeRealtime) {
             await unsubscribeRealtime();
             unsubscribeRealtime = null;
