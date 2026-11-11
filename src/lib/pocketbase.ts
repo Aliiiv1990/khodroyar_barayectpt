@@ -352,7 +352,7 @@ export const pocketbaseListings = {
     void writePocketBaseAudit('clear_all', 'all', 'All listings and import batches permanently deleted; records=' + records.length);
     return records.length;
   },
-  async subscribe(onEvent: (event: PocketBaseListingEvent) => void): Promise<() => void> {
+  async subscribe(onEvent: (event: PocketBaseListingEvent) => void): Promise<() => Promise<void>> {
     const unsubscribe = await pocketbase.collection('listings').subscribe('*', (event) => {
       const record = event.record;
       onEvent({
