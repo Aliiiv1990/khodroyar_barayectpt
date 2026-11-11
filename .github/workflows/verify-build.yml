@@ -7,7 +7,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [fix/data-integrity-postgres-import]
+    branches: [fix/data-integrity-postgres-import, feat/pocketbase-core]
 
 jobs:
   build:
