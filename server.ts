@@ -2362,14 +2362,14 @@ app.post('/api/admin/upload-chunk/finalize', async (req, res) => {
     });
 
     // Keep all chunks and the assembled ZIP until the API response confirms
-    // both extraction and the PostgreSQL transaction have succeeded.
-    // Read stitched zip and extract directly to persistent disk
+    // both extraction and the selected database import have succeeded.
+    // Open the stitched ZIP by path and stream individual entries from disk.
     const targetBatchName = customBatchName || meta.batchName || meta.fileName || `car_session_${Date.now()}.zip`;
     const targetPublishedBy = customPublishedBy || meta.publishedBy || 'مدیر سیستم (آپلود تکه‌ای)';
 
     const extractResult = await extractZipDirectlyToDisk(completeZipPath, targetBatchName, targetPublishedBy, pocketBaseToken || undefined);
 
-    // The PostgreSQL request middleware commits before the response is sent.
+    // Retain the upload until the selected backend confirms the import.
     // Retain the upload on any non-2xx response so the admin can safely retry.
     res.once('finish', () => {
       if (res.statusCode >= 200 && res.statusCode < 300) {
