@@ -210,16 +210,23 @@ export default function App() {
       let unsubscribeRealtime: (() => Promise<void>) | null = null;
       let importRefreshTimer: ReturnType<typeof setTimeout> | null = null;
       let subscriptionQueue: Promise<void> = Promise.resolve();
+      let lastSyncCursor = '';
+      let isRefreshingPocketBase = false;
       const refreshPocketBase = async () => {
+        if (isRefreshingPocketBase) return;
+        isRefreshingPocketBase = true;
         try {
           const fresh = await pocketbaseListings.list();
           if (!isMounted) return;
+          lastSyncCursor = await pocketbaseListings.getSyncCursor().catch(() => lastSyncCursor);
           setListings(fresh);
           setIsOffline(false);
           setLastSyncTime(new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }));
         } catch (error) {
           console.error('PocketBase catalogue load failed:', error);
           if (typeof navigator !== 'undefined' && !navigator.onLine) setIsOffline(true);
+        } finally {
+          isRefreshingPocketBase = false;
         }
       };
       const handlePocketBaseEvent = async (event: PocketBaseListingEvent) => {
@@ -279,7 +286,17 @@ export default function App() {
         void refreshPocketBase();
         restartRealtimeSubscription();
       });
-      const guestRefreshInterval = setInterval(() => { if (!pocketbase.authStore.isValid) void refreshPocketBase(); }, 60000);
+      const syncCursorInterval = setInterval(async () => {
+        try {
+          const cursor = await pocketbaseListings.getSyncCursor();
+          if (cursor && cursor !== lastSyncCursor) {
+            lastSyncCursor = cursor;
+            void refreshPocketBase();
+          }
+        } catch {
+          // Realtime remains primary; this cursor is only a reconnect safety net.
+        }
+      }, 30000);
       const handleOnline = () => { setIsOffline(false); void refreshPocketBase(); };
       const handleOffline = () => setIsOffline(true);
       const handleVisible = () => { if (document.visibilityState === 'visible') void refreshPocketBase(); };
@@ -290,7 +307,7 @@ export default function App() {
         isMounted = false;
         if (unsubscribeRealtime) void unsubscribeRealtime().catch((error) => console.warn('PocketBase realtime cleanup failed:', error));
         if (importRefreshTimer) clearTimeout(importRefreshTimer);
-        clearInterval(guestRefreshInterval);
+        clearInterval(syncCursorInterval);
         unsubscribeAuth();
         window.removeEventListener('online', handleOnline);
         window.removeEventListener('offline', handleOffline);
