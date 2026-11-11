@@ -287,7 +287,7 @@ export default function App() {
       document.addEventListener('visibilitychange', handleVisible);
       return () => {
         isMounted = false;
-        unsubscribeRealtime?.();
+        if (unsubscribeRealtime) void unsubscribeRealtime().catch((error) => console.warn('PocketBase realtime cleanup failed:', error));
         if (importRefreshTimer) clearTimeout(importRefreshTimer);
         unsubscribeAuth();
         window.removeEventListener('online', handleOnline);
