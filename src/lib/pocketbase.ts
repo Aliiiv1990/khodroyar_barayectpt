@@ -246,6 +246,10 @@ export const pocketbaseListings = {
       if (error?.status !== 404) throw error;
       existing = await pocketbase.collection('listings').getOne(recordId);
     }
+    const currentUserId = String(pocketbase.authStore.record?.id || '');
+    if (pocketbase.authStore.record?.role !== 'admin' && String(existing.created_by || '') !== currentUserId) {
+      throw new Error('حذف این آگهی فقط برای ثبت‌کننده یا مدیر سامانه مجاز است.');
+    }
     let contact: RecordModel | null = null;
     try {
       contact = await pocketbase.collection('listing_contacts').getFirstListItem(
