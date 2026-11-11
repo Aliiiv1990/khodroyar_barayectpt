@@ -328,7 +328,7 @@ export const pocketbaseListings = {
     const unsubscribe = await pocketbase.collection('listings').subscribe('*', (event) => {
       const record = event.record;
       onEvent({
-        action: event.action,
+        action: event.action as PocketBaseListingEvent['action'],
         recordId: String(record?.legacy_id || record?.id || ''),
         record: event.action === 'delete' || !record ? null : fromPocketBaseRecord(record),
       });
