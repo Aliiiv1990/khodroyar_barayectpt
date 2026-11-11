@@ -179,6 +179,14 @@ export const pocketbaseListings = {
     return mapped;
   },
 
+  async getSyncCursor(): Promise<string> {
+    const result = await pocketbase.collection('listings').getList(1, 1, {
+      ...(pocketbase.authStore.isValid ? {} : { filter: 'is_active = true' }),
+      sort: '-updated',
+      fields: 'updated',
+    });
+    return String(result.items[0]?.updated || '');
+  },
   async getContactPhone(listingId: string): Promise<string> {
     if (!pocketbase.authStore.isValid) return '';
     try {
