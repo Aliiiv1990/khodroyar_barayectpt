@@ -38,7 +38,7 @@ import {
   fetchSyncMetaFromLiara,
   deleteListingFromLiara,
 } from './utils/liaraApi';
-import { pocketbase, pocketbaseListings } from './lib/pocketbase';
+import { pocketbase, pocketbaseListings, type PocketBaseListingEvent } from './lib/pocketbase';
 
 const DEFAULT_FILTERS: FilterOptions = {
   type: 'sale',
@@ -207,8 +207,9 @@ export default function App() {
     let isMounted = true;
     let lastSeenServerTimestamp = '';
     if (USE_POCKETBASE) {
-      let unsubscribeRealtime: (() => void) | null = null;
+      let unsubscribeRealtime: (() => Promise<void>) | null = null;
       let importRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+      let subscriptionQueue: Promise<void> = Promise.resolve();
       const refreshPocketBase = async () => {
         try {
           const fresh = await pocketbaseListings.list();
@@ -221,8 +222,7 @@ export default function App() {
           if (typeof navigator !== 'undefined' && !navigator.onLine) setIsOffline(true);
         }
       };
-      void refreshPocketBase();
-      void pocketbaseListings.subscribe(async (event) => {
+      const handlePocketBaseEvent = async (event: PocketBaseListingEvent) => {
         if (!isMounted) return;
         if (event.action === 'delete') {
           setListings((previous) => previous.filter((item) => String(item.id) !== event.recordId));
@@ -257,10 +257,28 @@ export default function App() {
         });
         setSelectedListing((previous) => previous && String(previous.id) === String(liveRecord.id)
           ? ({ ...previous, ...liveRecord, phoneNumber: liveRecord.phoneNumber || previous.phoneNumber } as CarListing)
-          : previous);      }).then((unsubscribe) => {
-        if (!isMounted) unsubscribe(); else unsubscribeRealtime = unsubscribe;
-      }).catch((error) => console.error('PocketBase realtime subscription failed:', error));
-      const unsubscribeAuth = pocketbase.authStore.onChange(() => { void refreshPocketBase(); });
+          : previous);
+      };
+      const restartRealtimeSubscription = () => {
+        subscriptionQueue = subscriptionQueue.then(async () => {
+          if (unsubscribeRealtime) {
+            await unsubscribeRealtime();
+            unsubscribeRealtime = null;
+          }
+          if (!isMounted) return;
+          try {
+            unsubscribeRealtime = await pocketbaseListings.subscribe(handlePocketBaseEvent);
+          } catch (error) {
+            console.error('PocketBase realtime subscription failed:', error);
+          }
+        });
+      };
+      void refreshPocketBase();
+      restartRealtimeSubscription();
+      const unsubscribeAuth = pocketbase.authStore.onChange(() => {
+        void refreshPocketBase();
+        restartRealtimeSubscription();
+      });
       const handleOnline = () => { setIsOffline(false); void refreshPocketBase(); };
       const handleOffline = () => setIsOffline(true);
       const handleVisible = () => { if (document.visibilityState === 'visible') void refreshPocketBase(); };
