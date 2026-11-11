@@ -137,7 +137,7 @@ export const pocketbaseListings = {
     if (listing.phoneNumber && pocketbase.authStore.isValid) {
       await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.model?.id || '') });
     }
-    return fromPocketBaseRecord(record);
+    return { ...fromPocketBaseRecord(record), phoneNumber: listing.phoneNumber || '' };
   },
 
   async update(recordId: string, listing: Partial<CarListing>, files: File[] = []): Promise<CarListing> {
@@ -157,13 +157,21 @@ export const pocketbaseListings = {
         }
       }
     }
-    return fromPocketBaseRecord(record);
+    return { ...fromPocketBaseRecord(record), phoneNumber: listing.phoneNumber ?? '' };
   },
 
   async remove(recordId: string): Promise<void> {
     const existing = await pocketbase.collection('listings').getFirstListItem(
       pocketbase.filter('legacy_id = {:legacyId}', { legacyId: recordId }),
     );
+    try {
+      const contact = await pocketbase.collection('listing_contacts').getFirstListItem(
+        pocketbase.filter('listing_id = {:listingId}', { listingId: recordId }),
+      );
+      await pocketbase.collection('listing_contacts').delete(contact.id);
+    } catch {
+      // A listing may not have a private contact record.
+    }
     await pocketbase.collection('listings').delete(existing.id);
   },
 
