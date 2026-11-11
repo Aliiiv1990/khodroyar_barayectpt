@@ -1733,16 +1733,17 @@ async function importParsedListingsToPocketBase(
         try { existing = await pb.collection('listings').getFirstListItem(pb.filter('legacy_id = {:legacyId}', { legacyId: String(item.id) })); }
         catch (error: any) { if (error?.status !== 404) throw error; }
         let record: any;
-        if (existing) {
+        const preserveManualEdit = Boolean(existing?.is_edited === true && !item.isEdited);
+        if (existing && !preserveManualEdit) {
           form.set('created_by', String(existing.created_by || userId));
           form.set('revision', String(Number(existing.revision || 1) + 1));
           record = await pb.collection('listings').update(existing.id, form);
-        } else {
+        } else if (!existing) {
           form.append('created_by', userId);
           record = await pb.collection('listings').create(form);
         }
         const phone = String(item.phoneNumber || '').trim();
-        if (phone) {
+        if (phone && !preserveManualEdit) {
           try {
             const contact = await pb.collection('listing_contacts').getFirstListItem(pb.filter('listing_id = {:listingId}', { listingId: String(item.id) }));
             await pb.collection('listing_contacts').update(contact.id, { phone_number: phone, owner_id: userId });
