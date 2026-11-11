@@ -26,7 +26,7 @@ migrate((app) => {
     listRule: "is_active = true || @request.auth.role = \"admin\"",
     viewRule: "is_active = true || @request.auth.role = \"admin\"",
     createRule: '@request.auth.id != "" && @request.body.created_by = @request.auth.id',
-    updateRule: '@request.auth.id != ""',
+    updateRule: '@request.auth.id != "" && @request.body.revision > revision',
     deleteRule: '@request.auth.id != ""',
     fields: [
       { name: "legacy_id", type: "text", max: 160 },
