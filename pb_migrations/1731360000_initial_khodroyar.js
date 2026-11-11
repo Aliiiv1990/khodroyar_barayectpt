@@ -56,7 +56,7 @@ migrate((app) => {
       { name: "is_active", type: "bool" },
       { name: "revision", type: "number" },
       { name: "created_by", type: "text", max: 64 },
-      { name: "photos", type: "file", maxSelect: 20, maxSize: 12582912, mimeTypes: ["image/jpeg", "image/png", "image/webp", "image/avif"] },
+      { name: "photos", type: "file", maxSelect: 20, maxSize: 12582912, mimeTypes: ["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"] },
     ],
     indexes: [
       "CREATE UNIQUE INDEX idx_listings_legacy_id ON listings (legacy_id) WHERE legacy_id != ''",
