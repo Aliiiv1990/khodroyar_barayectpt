@@ -168,11 +168,11 @@ export const pocketbaseListings = {
   },
 
   async subscribe(onEvent: (event: PocketBaseListingEvent) => void): Promise<() => void> {
-    const unsubscribe = await pocketbase.collection('listings').subscribe('*', (event: RecordSubscription) => {
+    const unsubscribe = await pocketbase.collection('listings').subscribe('*', (event) => {
       const record = event.record;
       onEvent({
         action: event.action,
-        recordId: record?.id || '',
+        recordId: String(record?.legacy_id || record?.id || ''),
         record: event.action === 'delete' || !record ? null : fromPocketBaseRecord(record),
       });
     });
