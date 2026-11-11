@@ -110,7 +110,7 @@ export async function publishListingsToPocketBase(
       for (let attempt = 1; attempt <= 3 && !completed; attempt += 1) {
         try {
           const files = await listingFiles(listing);
-          await pocketbaseListings.upsert(listing, files);
+          await pocketbaseListings.upsertImported(listing, files);
           saved += 1;
           completed = true;
         } catch (error: any) {
