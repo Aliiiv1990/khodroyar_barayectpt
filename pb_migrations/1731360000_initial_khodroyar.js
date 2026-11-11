@@ -111,7 +111,7 @@ migrate((app) => {
     type: "base",
     listRule: '@request.auth.role = "admin"',
     viewRule: '@request.auth.role = "admin"',
-    createRule: '@request.auth.id != ""',
+    createRule: 'actor_id = @request.auth.id',
     updateRule: null,
     deleteRule: null,
     fields: [
