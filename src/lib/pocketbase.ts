@@ -177,6 +177,7 @@ export const pocketbaseListings = {
     if (listing.phoneNumber && pocketbase.authStore.isValid) {
       await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.record?.id || '') });
       const syncedRecord = await pocketbase.collection('listings').update(record.id, { revision: Number(record.revision || 1) + 1 });
+      void writePocketBaseAudit('create', String(listing.id), 'Listing created');
       return { ...fromPocketBaseRecord(syncedRecord), phoneNumber: listing.phoneNumber || '' };
     }
     void writePocketBaseAudit('create', String(listing.id), 'Listing created');
@@ -301,6 +302,7 @@ export const pocketbaseListings = {
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, records.length) }, () => worker()));
+    void writePocketBaseAudit('batch_visibility', batchName, visible ? 'Batch made visible' : 'Batch hidden');
   },
 
   async deleteBatch(batchName: string): Promise<number> {
@@ -325,6 +327,7 @@ export const pocketbaseListings = {
     } catch (error: any) {
       if (error?.status !== 404) throw error;
     }
+    void writePocketBaseAudit('batch_delete', batchName, 'Batch permanently deleted; records=' + records.length);
     return records.length;
   },
 
@@ -341,6 +344,7 @@ export const pocketbaseListings = {
     await Promise.all(Array.from({ length: Math.min(4, records.length) }, () => worker()));
     const batches = await pocketbase.collection('import_batches').getFullList({ fields: 'id' });
     await Promise.all(batches.map((batch) => pocketbase.collection('import_batches').delete(batch.id)));
+    void writePocketBaseAudit('clear_all', 'all', 'All listings and import batches permanently deleted; records=' + records.length);
     return records.length;
   },
   async subscribe(onEvent: (event: PocketBaseListingEvent) => void): Promise<() => void> {
