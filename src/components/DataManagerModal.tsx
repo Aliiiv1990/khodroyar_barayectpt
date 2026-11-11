@@ -16,6 +16,8 @@ import { parseSellersJson } from '../utils/sellerDataParser';
 import { clearIndexedDBListings, saveListingsToIndexedDB, setStorageExplicitlyCleared } from '../utils/storage';
 import { publishAdminDatasetToCloud, fetchAdminDatasetFromCloud } from '../utils/cloudSync';
 import { checkCloudConnection } from '../lib/firebase';
+import { pocketbase, pocketbaseListings } from '../lib/pocketbase';
+import { publishListingsToPocketBase } from '../lib/pocketbaseImport';
 import { getListingImage } from '../utils/imageHelper';
 import { buildSearchIndex } from '../utils/persianSearch';
 import {
@@ -169,6 +171,8 @@ const SPEC_SAMPLE_SESSION: SessionJsonRoot = {
   ],
 };
 
+const USE_POCKETBASE = Boolean(import.meta.env.VITE_POCKETBASE_URL?.trim());
+
 export const DataManagerModal: React.FC<DataManagerModalProps> = ({
   isOpen,
   onClose,
@@ -243,16 +247,18 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
       const res = await uploadZipFileToLiara(file, file.name, (p, msg) => {
         setZipDirectProgress(p);
         if (msg) setImportStatus(msg);
-      });
+      }, USE_POCKETBASE ? pocketbase.authStore.token : undefined);
       if (res.success) {
         setIsSuccess(true);
         setImportStatus(res.message);
 
-        // Fetch fresh listings from server so client instantly reflects updated records and images!
-        const refreshed = await fetchListingsFromLiara(20000, true);
+        // Refresh from the selected authoritative backend.
+        const refreshed = USE_POCKETBASE
+          ? await pocketbaseListings.list()
+          : await fetchListingsFromLiara(20000, true);
         if (refreshed && refreshed.length > 0) {
           onUpdateListings(refreshed);
-          await saveListingsToIndexedDB(refreshed);
+          if (!USE_POCKETBASE) await saveListingsToIndexedDB(refreshed);
         }
         await handleCheckLiara();
         await loadBatches();
