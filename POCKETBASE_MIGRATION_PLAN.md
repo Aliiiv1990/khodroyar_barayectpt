@@ -1,3 +1,6 @@
+> **Implementation status (2026-11-11):** Work is isolated on `feat/pocketbase-core`. The existing React UI now has a PocketBase-backed authentication path, listing read/create/update/delete, private contact records, revision checks, realtime listing updates, batch visibility/deletion, and a resumable ZIP import path that extracts archive entries from disk and stores photos in PocketBase. A separate PocketBase service Dockerfile and Liara setup guide are included. This is still staging work: CI has not completed and no live PocketBase service, real ZIP import, or restore test has been run. Full backup/restore UX and operational monitoring remain to be completed.
+
+
 # Khodroyar — PocketBase Core Migration
 
 ## Non-negotiable product constraint
