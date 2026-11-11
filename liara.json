@@ -1,6 +1,6 @@
 {
   "platform": "node",
-  "app": "car-exhibition",
+  "app": "carplus",
   "port": 3000,
   "disks": [
     {
