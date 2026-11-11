@@ -1,4 +1,4 @@
-import PocketBase, { type RecordModel, type RecordSubscription } from 'pocketbase';
+import PocketBase, { type RecordModel } from 'pocketbase';
 import type { CarListing, CarListingType } from '../types/car';
 import { sanitizeAndIndexListing } from '../utils/sessionDataParser';
 
@@ -82,6 +82,7 @@ function toFormData(listing: Partial<CarListing>, files: File[] = []): FormData 
     fuel_type: String(listing.fuelType || 'بنزین'),
     city: String(listing.city || ''),
     description: String(listing.description || ''),
+    file_description: String(listing.fileDescription || ''),
     source: listing.source || 'user',
     creator_name: String(listing.creatorName || ''),
     import_batch: String(listing.importBatchName || ''),
@@ -106,7 +107,7 @@ export const pocketbaseListings = {
     const first = await pocketbase.collection('listings').getList(1, pageSize, {
       filter,
       sort: '-created',
-      fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,phone_number,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
+      fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
     });
     const records: RecordModel[] = [...first.items];
     for (let page = 2; page <= first.totalPages; page += 1) {
