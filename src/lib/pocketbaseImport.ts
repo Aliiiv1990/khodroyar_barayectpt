@@ -144,5 +144,16 @@ export async function publishListingsToPocketBase(
     error_summary: errors.slice(0, 20).join('\n').slice(0, 4500),
   });
 
+  try {
+    await pocketbase.collection('audit_logs').create({
+      actor_id: String(pocketbase.authStore.record?.id || ''),
+      action: 'manual_import',
+      collection_name: 'listings',
+      record_id: String(batch.id),
+      summary: 'Manual import batch=' + batchName + '; saved=' + saved + '; failed=' + failed,
+    });
+  } catch (auditError) {
+    console.warn('[PocketBase] Could not write manual import audit entry:', auditError);
+  }
   return { saved, failed, batchId: batch.id };
 }
