@@ -38,6 +38,7 @@ import {
   fetchSyncMetaFromLiara,
   deleteListingFromLiara,
 } from './utils/liaraApi';
+import { pocketbase, pocketbaseListings } from './lib/pocketbase';
 
 const DEFAULT_FILTERS: FilterOptions = {
   type: 'sale',
@@ -47,6 +48,8 @@ const DEFAULT_FILTERS: FilterOptions = {
   dayFilter: 'all',
   city: '',
 };
+
+const USE_POCKETBASE = Boolean(import.meta.env.VITE_POCKETBASE_URL?.trim());
 
 export default function App() {
   // Load listings with persistence: if user cleared the data, keep it empty!
