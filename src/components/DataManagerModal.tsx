@@ -415,6 +415,13 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     }
 
     try {
+      if (USE_POCKETBASE) {
+        await pocketbaseListings.setBatchVisibility(batchName, newIsVisible);
+        setImportStatus(newIsVisible ? 'بسته «' + batchName + '» در PocketBase فعال شد.' : 'بسته «' + batchName + '» در PocketBase مخفی شد.');
+        setIsSuccess(true);
+        await loadBatches();
+        return;
+      }
       const res = await setLiaraBatchVisibility(batchName, newIsVisible);
       setImportStatus(
         newIsVisible
@@ -438,6 +445,13 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
       window.dispatchEvent(new Event('storage'));
     }
     try {
+      if (USE_POCKETBASE) {
+        await Promise.all(allBatchNames.map((name) => pocketbaseListings.setBatchVisibility(name, true)));
+        setImportStatus('تمامی بسته‌ها در PocketBase فعال شدند.');
+        setIsSuccess(true);
+        await loadBatches();
+        return;
+      }
       await setMultipleLiaraBatchesVisibility(allBatchNames, true);
       setImportStatus('تمامی فایل‌ها و بسته‌ها فعال شدند و در برنامه نمایش داده می‌شوند.');
       setIsSuccess(true);
@@ -457,6 +471,13 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
       window.dispatchEvent(new Event('storage'));
     }
     try {
+      if (USE_POCKETBASE) {
+        await Promise.all(allBatchNames.map((name) => pocketbaseListings.setBatchVisibility(name, false)));
+        setImportStatus('تمامی بسته‌ها در PocketBase مخفی شدند؛ اطلاعات حذف نشده‌اند.');
+        setIsSuccess(true);
+        await loadBatches();
+        return;
+      }
       await setMultipleLiaraBatchesVisibility(allBatchNames, false);
       setImportStatus('تمامی فایل‌ها موقتاً مخفی شدند (داده‌ها در سرور محفوظ است).');
       setIsSuccess(true);
@@ -473,6 +494,17 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     setImportStatus(`در حال حذف دائم بسته «${batchName}» از سرور لیارا و این دستگاه...`);
 
     try {
+      if (USE_POCKETBASE) {
+        await pocketbaseListings.deleteBatch(batchName);
+        const remainingListings = await pocketbaseListings.list();
+        onUpdateListings(remainingListings);
+        setHiddenBatches((previous) => { const next = new Set(previous); next.delete(batchName); return next; });
+        setImportStatus('بسته «' + batchName + '» به‌طور دائم از PocketBase حذف شد.');
+        setIsSuccess(true);
+        await handleCheckLiara();
+        await loadBatches();
+        return;
+      }
       const res = await deleteLiaraBatches({ batchName });
 
       const remainingListings = listings.filter((l) => (l.importBatchName || 'ثبت‌های دستی همکاران و مدیر') !== batchName);
