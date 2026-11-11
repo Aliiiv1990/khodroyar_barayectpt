@@ -2,6 +2,7 @@
 # Deploy this file as the Dockerfile for a separate service; do not replace the Node app.
 ARG POCKETBASE_VERSION=0.42.1
 FROM golang:1.27-alpine AS pocketbase-build
+RUN apk add --no-cache git ca-certificates
 ARG POCKETBASE_VERSION
 ENV CGO_ENABLED=0
 RUN go install "ganigeorgiev.com/pocketbase/pocketbase/examples/base@v${POCKETBASE_VERSION}"
