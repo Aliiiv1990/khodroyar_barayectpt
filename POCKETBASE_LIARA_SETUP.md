@@ -10,7 +10,7 @@ This branch is a migration workspace. It does not change the live Liara app.
 
 ## Initial setup
 1. Deploy `Dockerfile.pocketbase` as a separate Docker service. It builds PocketBase 0.42.1 from the maintainer's current Go module host and copies the `pb_migrations/` directory; PocketBase applies pending migrations automatically on startup.
-2. Create the first PocketBase superuser through the Liara console using `/pb/pocketbase superuser create`.
+2. Create the first PocketBase superuser through the Liara console using `/pb/pocketbase superuser create admin@example.com 'REPLACE_WITH_A_STRONG_PASSWORD'` (replace both placeholders; do not commit the password).
 3. Open the PocketBase dashboard and create one record in the `users` auth collection for each person. Set `display_name`, `role` (`admin` or `colleague`), `enabled=true`, a unique email, and a strong password.
 4. Set frontend build variable `VITE_POCKETBASE_URL` to the HTTPS PocketBase base URL. This is a public API base URL, not a secret.
 5. Set Node runtime variable `POCKETBASE_URL` to the PocketBase private-network URL reachable from the `carplus` Node app (or the HTTPS URL if private networking is not configured). The server validates the signed-in administrator's PocketBase token for ZIP imports; it does not need a PocketBase superuser password.
