@@ -143,6 +143,17 @@ export const pocketbaseListings = {
     return mapped;
   },
 
+  async getContactPhone(listingId: string): Promise<string> {
+    if (!pocketbase.authStore.isValid) return '';
+    try {
+      const contact = await pocketbase.collection('listing_contacts').getFirstListItem(
+        pocketbase.filter('listing_id = {:listingId}', { listingId }),
+      );
+      return String(contact.phone_number || '');
+    } catch {
+      return '';
+    }
+  },
   async create(listing: CarListing, files: File[] = []): Promise<CarListing> {
     const payload = toFormData(listing, files);
     payload.append('created_by', String(pocketbase.authStore.record?.id || ''));
