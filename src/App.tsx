@@ -538,80 +538,85 @@ export default function App() {
   }, []);
 
   // Handle adding new listing from voice or manual entry
-  const handleAddNewListing = useCallback((newListing: CarListing) => {
+  const handleAddNewListing = useCallback(async (newListing: CarListing) => {
     setStorageExplicitlyCleared(false);
-
     const taggedListing: CarListing = {
       ...newListing,
       importBatchName: newListing.importBatchName || 'ثبت‌های دستی همکاران و مدیر',
       importDate: newListing.importDate || new Date().toLocaleDateString('fa-IR'),
     };
-
-    // 1. Optimistic local update
-    setListings((prev) => {
-      const updated = [taggedListing, ...prev.filter((item) => item.id !== taggedListing.id)];
-      saveListingsToIndexedDB(updated);
-      return updated;
-    });
-
-    // 2. Push to Liara Server & Database (if running on Liara)
-    addListingToLiara(taggedListing).catch((err) => {
-      console.warn('Could not sync new ad to Liara server:', err);
-    });
-
-    // 3. Push to Firestore only if NOT on Liara
-    if (typeof window !== 'undefined' && !window.location.hostname.includes('liara.run') && !window.location.hostname.includes('liara.ir')) {
-      addListingToCloud(newListing).catch((err) => {
-        console.warn('Could not sync new ad to cloud:', err);
+    if (USE_POCKETBASE) {
+      try {
+        const saved = await pocketbaseListings.create(taggedListing);
+        setListings((previous) => [saved, ...previous.filter((item) => item.id !== saved.id)]);
+      } catch (error) {
+        console.error('PocketBase create failed:', error);
+        window.alert('ثبت آگهی در پایگاه داده انجام نشد. اتصال یا سطح دسترسی حساب را بررسی کنید.');
+        throw error;
+      }
+    } else {
+      setListings((previous) => {
+        const updated = [taggedListing, ...previous.filter((item) => item.id !== taggedListing.id)];
+        saveListingsToIndexedDB(updated);
+        return updated;
       });
+      addListingToLiara(taggedListing).catch((err) => console.warn('Could not sync new ad to Liara server:', err));
+      if (typeof window !== 'undefined' && !window.location.hostname.includes('liara.run') && !window.location.hostname.includes('liara.ir')) {
+        addListingToCloud(newListing).catch((err) => console.warn('Could not sync new ad to cloud:', err));
+      }
     }
-
-    // Switch active tab to match the new listing type
-    setFilters((prev) => ({
-      ...prev,
-      type: newListing.type,
-      searchQuery: '',
-    }));
+    setFilters((previous) => ({ ...previous, type: newListing.type, searchQuery: '' }));
   }, []);
 
-  // Handle in-place editing of an existing listing (updates local state, IndexedDB, and Liara database for all devices)
   const handleUpdateSingleListing = useCallback(async (updatedListing: CarListing) => {
-    const cleanUpdated = sanitizeAndIndexListing({
-      ...updatedListing,
-      isEdited: true,
-    });
-
-    // 1. Immediate optimistic update locally and in IndexedDB
-    setListings((prev) => {
-      const idx = prev.findIndex((item) => item.id === cleanUpdated.id);
-      if (idx === -1) return prev;
-      const next = [...prev];
-      next[idx] = cleanUpdated;
+    const cleanUpdated = sanitizeAndIndexListing({ ...updatedListing, isEdited: true });
+    if (USE_POCKETBASE) {
+      try {
+        const saved = await pocketbaseListings.update(cleanUpdated.id, cleanUpdated);
+        setListings((previous) => previous.map((item) => item.id === saved.id ? saved : item));
+        setSelectedListing((previous) => previous && previous.id === saved.id ? saved : previous);
+      } catch (error) {
+        console.error('PocketBase update failed:', error);
+        window.alert('ذخیره تغییرات در پایگاه داده انجام نشد. لطفاً دوباره تلاش کنید.');
+        throw error;
+      }
+      return;
+    }
+    setListings((previous) => {
+      const index = previous.findIndex((item) => item.id === cleanUpdated.id);
+      if (index < 0) return previous;
+      const next = [...previous];
+      next[index] = cleanUpdated;
       saveListingsToIndexedDB(next);
       return next;
     });
-
-    setSelectedListing((prev) => (prev && prev.id === cleanUpdated.id ? cleanUpdated : prev));
-
-    // 2. Persist to centralized Liara database so all phones receive the update
+    setSelectedListing((previous) => previous && previous.id === cleanUpdated.id ? cleanUpdated : previous);
     await updateListingOnLiara(cleanUpdated);
   }, []);
 
-  // Handle permanent deletion of an existing listing (Server-First authoritative tombstone)
   const handleDeleteSingleListing = useCallback(async (id: string) => {
-    // 1. Optimistic removal locally and in IndexedDB
-    setListings((prev) => {
-      const next = prev.filter((item) => String(item.id) !== String(id));
+    if (USE_POCKETBASE) {
+      try {
+        await pocketbaseListings.remove(id);
+        setListings((previous) => previous.filter((item) => String(item.id) !== String(id)));
+        setSelectedListing((previous) => previous && String(previous.id) === String(id) ? null : previous);
+        setIsDetailOpen(false);
+      } catch (error) {
+        console.error('PocketBase delete failed:', error);
+        window.alert('حذف آگهی از پایگاه داده انجام نشد. لطفاً سطح دسترسی حساب را بررسی کنید.');
+        throw error;
+      }
+      return;
+    }
+    setListings((previous) => {
+      const next = previous.filter((item) => String(item.id) !== String(id));
       saveListingsToIndexedDB(next);
       return next;
     });
-    setSelectedListing((prev) => (prev && String(prev.id) === String(id) ? null : prev));
+    setSelectedListing((previous) => previous && String(previous.id) === String(id) ? null : previous);
     setIsDetailOpen(false);
-
-    // 2. Authoritative deletion on Liara server with tombstone registration
     await deleteListingFromLiara(id);
   }, []);
-
   // Hidden batches state
   const [hiddenBatches, setHiddenBatches] = useState<Set<string>>(() => {
     if (typeof window !== 'undefined') {
