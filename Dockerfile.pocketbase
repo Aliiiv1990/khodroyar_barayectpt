@@ -15,4 +15,5 @@ COPY pb_migrations /pb/pb_migrations
 RUN mkdir -p /pb/pb_data
 EXPOSE 8090
 VOLUME ["/pb/pb_data"]
-CMD ["/pb/pocketbase", "serve", "--http=0.0.0.0:8090"]
+ENV POCKETBASE_ALLOWED_ORIGINS=https://carplus.liara.run
+CMD ["/bin/sh", "-c", "exec /pb/pocketbase serve --http=0.0.0.0:8090 --origins=${POCKETBASE_ALLOWED_ORIGINS}"]
