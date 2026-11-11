@@ -719,6 +719,11 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
   // Cloud Publish handler (Admin uploads daily data for all users)
   const handlePublishToCloud = async () => {
+    if (USE_POCKETBASE) {
+      setImportStatus('ارسال به Firebase در حالت PocketBase غیرفعال است تا دو پایگاه داده از هم جدا و متناقض نشوند.');
+      setIsSuccess(false);
+      return;
+    }
     if (listings.length === 0) {
       setImportStatus('ابتدا باید دیتایی وارد سامانه شده باشد تا روی ابر منتشر شود.');
       setIsSuccess(false);
@@ -753,6 +758,11 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
   // Cloud Fetch handler (Fetch latest admin dataset)
   const handleFetchFromCloud = async () => {
+    if (USE_POCKETBASE) {
+      setImportStatus('همگام‌سازی Firebase در حالت PocketBase غیرفعال است؛ منبع اصلی داده‌ها PocketBase است.');
+      setIsSuccess(false);
+      return;
+    }
     setIsFetchingCloud(true);
     setPublishProgress(0);
     setImportStatus('در حال بررسی و بارگیری آخرین نسخه بانک اطلاعاتی از فضای ابری...');
