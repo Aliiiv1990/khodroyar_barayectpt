@@ -774,7 +774,8 @@ async function ensureConnectionAvailable(maxWaitMs = 30000): Promise<boolean> {
 export async function uploadZipFileToLiara(
   file: File | Blob,
   batchName?: string,
-  onProgress?: (percent: number, message?: string) => void
+  onProgress?: (percent: number, message?: string) => void,
+  authToken?: string
 ): Promise<{
   success: boolean;
   message: string;
@@ -806,13 +807,14 @@ export async function uploadZipFileToLiara(
     return 'خطای سرور (کد ' + status + ')';
   };
 
+  const authorizationHeaders = authToken ? { Authorization: 'Bearer ' + authToken } : {};
   onProgress?.(1, 'در حال اتصال به سرور و آماده‌سازی آپلود...');
   const initController = new AbortController();
   const initTimer = setTimeout(() => initController.abort(), 30000);
   let receivedChunks = new Set<number>();
   try {
     const response = await fetch('/api/admin/upload-chunk/init', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders },
       body: JSON.stringify({
         uploadId, fileName, fileSize: file.size, totalChunks,
         batchName: fileName, publishedBy: 'مدیر نمایشگاه',
@@ -860,6 +862,7 @@ export async function uploadZipFileToLiara(
           const xhr = new XMLHttpRequest();
           xhr.open('POST', '/api/admin/upload-chunk?uploadId=' + encodeURIComponent(uploadId) + '&chunkIndex=' + chunkIndex + '&totalChunks=' + totalChunks);
           xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+          if (authToken) xhr.setRequestHeader('Authorization', 'Bearer ' + authToken);
           xhr.timeout = 90000;
           xhr.upload.onprogress = (event) => {
             if (!event.lengthComputable) return;
@@ -909,7 +912,7 @@ export async function uploadZipFileToLiara(
   const finalTimer = setTimeout(() => finalController.abort(), 10 * 60 * 1000);
   try {
     const response = await fetch('/api/admin/upload-chunk/finalize', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders },
       body: JSON.stringify({ uploadId, batchName: fileName, publishedBy: 'مدیر نمایشگاه' }),
       signal: finalController.signal, cache: 'no-store',
     });
