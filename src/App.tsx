@@ -16,7 +16,6 @@ import {
   clearIndexedDBListings,
   isStorageExplicitlyCleared,
   setStorageExplicitlyCleared,
-  hasUserVisitedBefore,
   markUserVisited,
 } from './utils/storage';
 import { HeaderAndTabs } from './components/HeaderAndTabs';
@@ -51,20 +50,9 @@ const DEFAULT_FILTERS: FilterOptions = {
 
 export default function App() {
   // Load listings with persistence: if user cleared the data, keep it empty!
-  const [listings, setListings] = useState<CarListing[]>(() => {
-    if (typeof window !== 'undefined' && isStorageExplicitlyCleared()) {
-      return [];
-    }
-    // If first-time visitor ever, provide the initial 5,000 demo listings
-    if (typeof window !== 'undefined' && !hasUserVisitedBefore()) {
-      const raw = generateRealisticCarListings(5000);
-      const { prunedListings } = pruneOldListings(raw);
-      markUserVisited();
-      saveListingsToIndexedDB(prunedListings);
-      return prunedListings;
-    }
-    return [];
-  });
+  // Start from an empty in-memory list and hydrate the local cache first.
+  // Production devices must never invent a local demo catalogue: the API is authoritative.
+  const [listings, setListings] = useState<CarListing[]>([]);
 
   // Filter state
   const [filters, setFilters] = useState<FilterOptions>(DEFAULT_FILTERS);
@@ -138,19 +126,8 @@ export default function App() {
   }, []);
 
   // Roles: 'guest' (hidden phones), 'colleague' (visible phones), 'admin' (server sync & database controls)
-  const [userRole, setUserRole] = useState<UserAuthRole>(() => {
-    if (typeof window !== 'undefined') {
-      // Remove legacy auto-persisted role keys so the top button never falsely shows "مدیر" on fresh entry
-      localStorage.removeItem('car_user_role');
-      localStorage.removeItem('car_colleague_unlocked');
-
-      const savedSessionRole = sessionStorage.getItem('car_session_role_v2') as UserAuthRole;
-      if (savedSessionRole === 'admin' || savedSessionRole === 'colleague') {
-        return savedSessionRole;
-      }
-    }
-    return 'guest';
-  });
+  // Never trust a role cached by the browser; the signed server session restores it after mount.
+  const [userRole, setUserRole] = useState<UserAuthRole>('guest');
 
   const isUnlockedColleague = userRole === 'admin' || userRole === 'colleague';
 
@@ -171,10 +148,44 @@ export default function App() {
     sessionStorage.removeItem('car_session_role_v2');
     localStorage.removeItem('car_user_role');
     localStorage.removeItem('car_colleague_unlocked');
+    void fetch('/api/auth/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+    }).catch(() => undefined);
   }, []);
 
   const handleToggleColleagueLock = useCallback(() => {
     setIsAuthModalOpen(true);
+  }, []);
+
+  // A browser tab role is only a UI hint. Restore permissions from the server's
+  // HttpOnly signed session cookie on every page load.
+  useEffect(() => {
+    let active = true;
+    fetch('/api/auth/session', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    })
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then((session) => {
+        if (!active) return;
+        if (session?.authenticated && (session.role === 'admin' || session.role === 'colleague')) {
+          setUserRole(session.role);
+          sessionStorage.setItem('car_session_role_v2', session.role);
+        } else {
+          setUserRole('guest');
+          sessionStorage.removeItem('car_session_role_v2');
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setUserRole('guest');
+        sessionStorage.removeItem('car_session_role_v2');
+      });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Centralized Data Loader:
@@ -203,7 +214,7 @@ export default function App() {
       try {
         // Step 2a: Ultra-fast initial paint in < 300ms using fast metadata format
         const fastListings = await fetchListingsFromLiara(10000, true);
-        if (fastListings && fastListings.length > 0 && isMounted) {
+        if (fastListings !== null && isMounted) {
           const { prunedListings } = pruneOldListings(fastListings);
           setListings(prunedListings);
           setStorageExplicitlyCleared(false);
@@ -214,7 +225,7 @@ export default function App() {
 
         // Step 2b: Full background sync for offline IndexedDB persistence
         const liaraListings = await fetchListingsFromLiara(25000, false);
-        if (liaraListings && liaraListings.length > 0 && isMounted) {
+        if (liaraListings !== null && isMounted) {
           const { prunedListings } = pruneOldListings(liaraListings);
           setListings(prunedListings);
           setStorageExplicitlyCleared(false);
@@ -224,7 +235,7 @@ export default function App() {
           setLastSyncTime(new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }));
           return true;
         }
-        return Boolean(fastListings && fastListings.length > 0);
+        return fastListings !== null;
       } catch (err) {
         console.warn('Could not sync with Liara server:', err);
         if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -234,15 +245,7 @@ export default function App() {
       return false;
     };
 
-    syncWithLiara().then((synced) => {
-      if (!synced && isMounted && !hasUserVisitedBefore() && !isStorageExplicitlyCleared()) {
-        const raw = generateRealisticCarListings(5000);
-        const { prunedListings } = pruneOldListings(raw);
-        setListings(prunedListings);
-        markUserVisited();
-        saveListingsToIndexedDB(prunedListings);
-      }
-    });
+    void syncWithLiara();
 
     // Step 3: Real-time Live Synchronization across Mobile & Laptop (SSE)
     let eventSource: EventSource | null = null;
@@ -333,22 +336,16 @@ export default function App() {
       try {
         const cars = await fetchListingsFromLiara(25000);
         if (cars && isMounted) {
-          if (cars.length === 0 && !allowEmpty) {
-            return;
-          }
           const { prunedListings } = pruneOldListings(cars);
           setListings((prev) => {
             if (replaceAll) {
               saveListingsToIndexedDB(prunedListings);
               return prunedListings;
             }
-            const serverIds = new Set(prunedListings.map((c) => c.id));
-            const localUnsynced = prev.filter(
-              (item) => !serverIds.has(item.id) && !String(item.id).startsWith('car_')
-            );
-            const merged = [...prunedListings, ...localUnsynced];
-            saveListingsToIndexedDB(merged);
-            return merged;
+            // The server is authoritative whenever it is reachable. Merging arbitrary
+            // local cache entries here can resurrect records deleted on another device.
+            saveListingsToIndexedDB(prunedListings);
+            return prunedListings;
           });
         }
       } catch (err) {
@@ -386,7 +383,12 @@ export default function App() {
 
         // Purge tombstones: deleted ads on server can NEVER resurrect from client cache
         if (Array.isArray((meta as any).tombstones) && (meta as any).tombstones.length > 0) {
-          const tombSet = new Set((meta as any).tombstones.map(String));
+          const tombSet = new Set(
+            (meta as any).tombstones
+              .map((item: any) => typeof item === 'string' ? item : item?.id)
+              .filter((id: unknown): id is string | number => typeof id === 'string' || typeof id === 'number')
+              .map(String)
+          );
           setListings((prev) => {
             const hasTomb = prev.some((l) => tombSet.has(String(l.id)));
             if (!hasTomb) return prev;

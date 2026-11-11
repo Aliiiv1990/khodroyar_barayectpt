@@ -213,6 +213,9 @@ export async function publishListingsToLiara(
       }
     }
 
+    // Capture the exact IDs expected from this import. A successful HTTP status
+    // for each batch is not enough: verify the final server catalogue before reporting success.
+    const expectedIds = new Set(sanitizedListings.map((item) => String(item.id)));
     const uploadJobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const failedBatches: string[] = [];
     let totalSaved = sanitizedListings.length;
@@ -331,6 +334,13 @@ export async function publishListingsToLiara(
             if (!fullBatchResp.ok) {
               throw new Error(`خطای سرور (${resp.status})`);
             }
+          } else {
+            const imageResult = await resp.json();
+            if (!imageResult?.success || Number(imageResult.updated) !== batchSlice.length) {
+              throw new Error(
+                `ذخیره تصویر ناقص بود: ${Number(imageResult?.updated) || 0} از ${batchSlice.length} تصویر به رکوردها متصل شد.`
+              );
+            }
           }
 
           batchSuccess = true;
@@ -364,10 +374,29 @@ export async function publishListingsToLiara(
       };
     }
 
+    // Re-read the lightweight server catalogue and reconcile every submitted ID.
+    const verifiedListings = await fetchListingsFromLiara(45000, true);
+    if (!verifiedListings) {
+      return {
+        success: false,
+        message: 'بسته‌ها ارسال شدند، اما دریافت فهرست نهایی سرور برای تأیید ذخیره‌سازی ممکن نشد. لطفاً وضعیت سرور را بررسی و دوباره همگام‌سازی کنید.',
+        count: totalSaved,
+      };
+    }
+    const persistedIds = new Set(verifiedListings.map((item) => String(item.id)));
+    const missingIds = Array.from(expectedIds).filter((id) => !persistedIds.has(id));
+    if (missingIds.length > 0) {
+      return {
+        success: false,
+        message: `تأیید نهایی ناموفق بود: از ${expectedIds.size} شناسه ارسالی، ${missingIds.length} مورد در فهرست سرور پیدا نشد. هیچ موفقیت کاملی اعلام نمی‌شود؛ دوباره تلاش کنید.`,
+        count: verifiedListings.length,
+      };
+    }
+
     return {
       success: true,
-      message: `تمامی ${totalSaved} خودرو همراه با تصاویر و مشخصات با موفقیت در دیتابیس پایدار لیارا ثبت گردید و بلافاصله برای تمام دستگاه‌ها فعال شد.`,
-      count: totalSaved,
+      message: `تمام ${expectedIds.size} شناسه ارسالی در فهرست سرور تأیید شد؛ تعداد کل ثبت‌شده: ${verifiedListings.length}.`,
+      count: verifiedListings.length,
     };
   } catch (err: any) {
     let cleanMessage = err.message || 'مشکل ارتباط با سرور لیارا';
@@ -755,151 +784,151 @@ export async function uploadZipFileToLiara(
   buyersCount?: number;
   extractedImagesCount?: number;
 }> {
-  const cleanBatchName = batchName || (file instanceof File ? file.name : `car_session_${Date.now()}.zip`);
-  const CHUNK_SIZE = 1.5 * 1024 * 1024; // 1.5 MB resilient chunks
+  const isFile = typeof File !== 'undefined' && file instanceof File;
+  const fileName = batchName || (isFile ? (file as File).name : 'car_session_' + Date.now() + '.zip');
+  if (!file.size) return { success: false, message: 'فایل ZIP خالی است.' };
+  const CHUNK_SIZE = 1.5 * 1024 * 1024;
   const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
-  const uploadId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const resumeKey = 'khodroyar_zip_upload:' + fileName + ':' + file.size + ':' + (isFile ? (file as File).lastModified : 0);
+  let uploadId = '';
+  try { uploadId = typeof localStorage !== 'undefined' ? localStorage.getItem(resumeKey) || '' : ''; } catch {}
+  if (!/^[a-zA-Z0-9_-]{8,80}$/.test(uploadId)) uploadId = 'upload_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+  try { if (typeof localStorage !== 'undefined') localStorage.setItem(resumeKey, uploadId); } catch {}
 
-  // Step 1: Initialize session with server
-  if (onProgress) onProgress(1, 'در حال راه‌اندازی نشست ارسال تکه‌ای به لیارا...');
+  const errorMessage = (status: number, payload: any): string => {
+    const message = String(payload?.error || payload?.message || '').trim();
+    if (message) return message;
+    if (status === 401) return 'نشست مدیر معتبر نیست؛ دوباره با رمز مدیر وارد برنامه شوید.';
+    if (status === 403) return 'این عملیات فقط با دسترسی مدیر مجاز است.';
+    if (status === 413) return 'حجم فایل از سقف مجاز سرور بیشتر است.';
+    if (status === 503) return 'سرور یا اتصال PostgreSQL آماده نیست؛ وضعیت سرویس لیارا را بررسی کنید.';
+    if (status === 404) return 'مسیر آپلود در نسخه فعلی سرور وجود ندارد؛ نسخه اصلاح‌شده باید مستقر شود.';
+    return 'خطای سرور (کد ' + status + ')';
+  };
 
+  onProgress?.(1, 'در حال اتصال به سرور و آماده‌سازی آپلود...');
+  const initController = new AbortController();
+  const initTimer = setTimeout(() => initController.abort(), 30000);
   let receivedChunks = new Set<number>();
   try {
-    const initController = new AbortController();
-    const initTimer = setTimeout(() => initController.abort(), 20000);
-    const initResp = await fetch('/api/admin/upload-chunk/init', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const response = await fetch('/api/admin/upload-chunk/init', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        uploadId,
-        fileName: cleanBatchName,
-        fileSize: file.size,
-        totalChunks,
-        batchName: cleanBatchName,
-        publishedBy: 'مدیر نمایشگاه',
+        uploadId, fileName, fileSize: file.size, totalChunks,
+        batchName: fileName, publishedBy: 'مدیر نمایشگاه',
       }),
-      signal: initController.signal,
+      signal: initController.signal, cache: 'no-store',
     });
-    clearTimeout(initTimer);
-
-    if (initResp.ok) {
-      const initData = await initResp.json();
-      if (Array.isArray(initData.receivedChunks)) {
-        receivedChunks = new Set(initData.receivedChunks);
-      }
+    let payload: any = null;
+    try { payload = await response.json(); } catch {}
+    if (!response.ok || payload?.success === false) {
+      return { success: false, message: errorMessage(response.status, payload) };
     }
-  } catch (initErr) {
-    console.warn('Chunked init failed, will attempt chunk uploads directly:', initErr);
-  }
-
-  // Step 2: Upload each chunk with up to 15 retries and automatic resume
-  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-    if (receivedChunks.has(chunkIndex)) {
-      if (onProgress) {
-        const pct = Math.min(94, Math.round(((chunkIndex + 1) / totalChunks) * 94));
-        onProgress(pct, `تکه ${chunkIndex + 1} از ${totalChunks} قبلاً ذخیره شده است.`);
-      }
-      continue;
+    if (Array.isArray(payload?.receivedChunks)) {
+      receivedChunks = new Set(payload.receivedChunks.filter((n: unknown) =>
+        Number.isInteger(n) && Number(n) >= 0 && Number(n) < totalChunks
+      ));
     }
-
-    const start = chunkIndex * CHUNK_SIZE;
-    const end = Math.min(file.size, (chunkIndex + 1) * CHUNK_SIZE);
-    const chunkBlob = file.slice(start, end);
-
-    let chunkUploaded = false;
-    let lastError = '';
-
-    for (let attempt = 1; attempt <= 15; attempt++) {
-      await ensureConnectionAvailable(15000);
-
-      try {
-        if (onProgress) {
-          const pct = Math.min(94, Math.round((chunkIndex / totalChunks) * 94));
-          const retryNotice = attempt > 1 ? ` (تلاش مجدد ${attempt}/15)` : '';
-          onProgress(pct, `ارسال تکه ${chunkIndex + 1} از ${totalChunks} (${pct}٪)${retryNotice}...`);
-        }
-
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 60000);
-
-        const resp = await fetch(
-          `/api/admin/upload-chunk?uploadId=${encodeURIComponent(uploadId)}&chunkIndex=${chunkIndex}&totalChunks=${totalChunks}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/octet-stream' },
-            body: chunkBlob,
-            signal: controller.signal,
-          }
-        );
-        clearTimeout(timer);
-
-        if (resp.ok) {
-          chunkUploaded = true;
-          receivedChunks.add(chunkIndex);
-          if (onProgress) {
-            const pct = Math.min(94, Math.round(((chunkIndex + 1) / totalChunks) * 94));
-            onProgress(pct, `تکه ${chunkIndex + 1} از ${totalChunks} با موفقیت دریافت شد.`);
-          }
-          break;
-        } else {
-          lastError = `خطای سرور (${resp.status})`;
-        }
-      } catch (err: any) {
-        lastError = err.message || 'خطای شبکه یا قطعی موقت اینترنت';
-      }
-
-      if (attempt < 15) {
-        const delay = Math.min(10000, 1000 * Math.pow(1.5, attempt - 1) + Math.random() * 500);
-        await sleepAsync(delay);
-      }
-    }
-
-    if (!chunkUploaded) {
-      return {
-        success: false,
-        message: `ارسال تکه شماره ${chunkIndex + 1} از ${totalChunks} به دلیل نوسان شبکه متوقف شد (${lastError}). لطفاً مجدداً دکمه را بزنید؛ ارسال دقیقاً از همین تکه ادامه می‌یابد.`,
-      };
-    }
-  }
-
-  // Step 3: Finalize stitching and extraction on server
-  if (onProgress) onProgress(95, 'تمامی تکه‌ها دریافت شدند. در حال استخراج و ذخیره‌سازی تصاویر در دیسک دائمی...');
-
-  try {
-    const finalController = new AbortController();
-    const finalTimer = setTimeout(() => finalController.abort(), 180000);
-
-    const finalResp = await fetch('/api/admin/upload-chunk/finalize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        uploadId,
-        batchName: cleanBatchName,
-        publishedBy: 'مدیر سیستم (آپلود تکه‌ای)',
-      }),
-      signal: finalController.signal,
-    });
-    clearTimeout(finalTimer);
-
-    if (!finalResp.ok) {
-      let errText = 'خطا در نهایی‌سازی فایل زیپ در سرور';
-      try {
-        const errJson = await finalResp.json();
-        if (errJson.error) errText = errJson.error;
-      } catch {}
-      return {
-        success: false,
-        message: `${errText} (کد وضعیت ${finalResp.status})`,
-      };
-    }
-
-    const res = await finalResp.json();
-    if (onProgress) onProgress(100, 'فایل و عکس‌ها با موفقیت در دیسک دائمی لیارا ثبت شدند.');
-    return res;
-  } catch (err: any) {
+  } catch (error: any) {
     return {
       success: false,
-      message: `خطا در پردازش نهایی در سرور: ${err.message || 'مهلت زمانی به پایان رسید'}`,
+      message: error?.name === 'AbortError'
+        ? 'شروع آپلود در ۳۰ ثانیه پاسخی از سرور نگرفت؛ اتصال سرور و دیتابیس را بررسی کنید.'
+        : (error?.message || 'شروع آپلود در سرور ناموفق بود.'),
     };
+  } finally { clearTimeout(initTimer); }
+
+  let uploadedBytes = 0;
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+    const startByte = chunkIndex * CHUNK_SIZE;
+    const endByte = Math.min(file.size, startByte + CHUNK_SIZE);
+    const chunkSize = endByte - startByte;
+    if (receivedChunks.has(chunkIndex)) {
+      uploadedBytes += chunkSize;
+      onProgress?.(Math.min(94, Math.max(1, Math.floor(uploadedBytes / file.size * 94))), 'تکه ' + (chunkIndex + 1) + ' از ' + totalChunks + ' قبلاً ذخیره شده است.');
+      continue;
+    }
+    const chunk = file.slice(startByte, endByte);
+    let uploaded = false;
+    let lastError = 'خطای ارتباط با سرور';
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      if (!(await ensureConnectionAvailable(15000))) {
+        return { success: false, message: 'اینترنت قطع است؛ پس از وصل شدن، همان فایل را دوباره انتخاب کنید تا آپلود ادامه پیدا کند.' };
+      }
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/api/admin/upload-chunk?uploadId=' + encodeURIComponent(uploadId) + '&chunkIndex=' + chunkIndex + '&totalChunks=' + totalChunks);
+          xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+          xhr.timeout = 90000;
+          xhr.upload.onprogress = (event) => {
+            if (!event.lengthComputable) return;
+            const percent = Math.min(94, Math.max(1, Math.floor((uploadedBytes + Math.min(chunkSize, event.loaded)) / file.size * 94)));
+            onProgress?.(percent, 'در حال ارسال تکه ' + (chunkIndex + 1) + ' از ' + totalChunks + '...');
+          };
+          xhr.onload = () => {
+            let payload: any = null;
+            try { payload = JSON.parse(xhr.responseText || '{}'); } catch {}
+            if (xhr.status >= 200 && xhr.status < 300 && payload?.success !== false) resolve();
+            else {
+              const err: any = new Error(errorMessage(xhr.status, payload));
+              err.status = xhr.status;
+              reject(err);
+            }
+          };
+          xhr.onerror = () => reject(new Error('ارتباط با سرور قطع شد؛ اینترنت یا دسترسی برنامه را بررسی کنید.'));
+          xhr.ontimeout = () => reject(new Error('ارسال این تکه بیش از ۹۰ ثانیه طول کشید.'));
+          xhr.onabort = () => reject(new Error('ارسال تکه لغو شد.'));
+          xhr.send(chunk);
+        });
+        uploaded = true;
+        uploadedBytes += chunkSize;
+        onProgress?.(Math.min(94, Math.max(1, Math.floor(uploadedBytes / file.size * 94))), 'تکه ' + (chunkIndex + 1) + ' از ' + totalChunks + ' ذخیره شد.');
+        break;
+      } catch (error: any) {
+        lastError = error?.message || 'خطای شبکه';
+        const status = Number(error?.status || 0);
+        if (status >= 400 && status < 500 && status !== 408 && status !== 429) return { success: false, message: lastError };
+        if (attempt < 5) {
+          onProgress?.(Math.min(94, Math.max(1, Math.floor(uploadedBytes / file.size * 94))), lastError + '؛ تلاش مجدد ' + (attempt + 1) + ' از ۵...');
+          await sleepAsync(Math.min(8000, 1000 * Math.pow(2, attempt - 1)));
+        }
+      }
+    }
+    if (!uploaded) {
+      return {
+        success: false,
+        message: 'ارسال تکه ' + (chunkIndex + 1) + ' از ' + totalChunks + ' انجام نشد: ' + lastError +
+          ' فایل موقت حفظ شده؛ همان فایل را دوباره انتخاب کنید تا ادامه یابد.',
+      };
+    }
   }
+
+  onProgress?.(95, 'فایل دریافت شد؛ در حال استخراج تصاویر و ثبت متن‌ها در PostgreSQL...');
+  const finalController = new AbortController();
+  const finalTimer = setTimeout(() => finalController.abort(), 10 * 60 * 1000);
+  try {
+    const response = await fetch('/api/admin/upload-chunk/finalize', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uploadId, batchName: fileName, publishedBy: 'مدیر نمایشگاه' }),
+      signal: finalController.signal, cache: 'no-store',
+    });
+    let result: any = null;
+    try { result = await response.json(); } catch {}
+    if (!response.ok || result?.success === false) return { success: false, message: errorMessage(response.status, result) };
+    try { if (typeof localStorage !== 'undefined') localStorage.removeItem(resumeKey); } catch {}
+    onProgress?.(
+      100,
+      'تمام شد؛ ' + (result.batchCount ?? result.total ?? 0) + ' رکورد و ' +
+        (result.extractedImagesCount ?? 0) + ' عکس ثبت شد.'
+    );
+    return result;
+  } catch (error: any) {
+    return {
+      success: false,
+      message: error?.name === 'AbortError'
+        ? 'استخراج ZIP بیش از ۱۰ دقیقه طول کشید؛ فایل موقت برای بررسی روی سرور حفظ شده است.'
+        : (error?.message || 'ثبت نهایی ZIP در سرور ناموفق بود.'),
+    };
+  } finally { clearTimeout(finalTimer); }
 }

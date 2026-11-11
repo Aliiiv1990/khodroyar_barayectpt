@@ -1212,6 +1212,8 @@ export async function parseZipArchive(
   sellersCount: number;
   buyersCount: number;
   errorsCount: number;
+  sourceRecordsCount: number;
+  skippedRecordsCount: number;
   extractedImagesCount: number;
 }> {
   const zip = new JSZip();
@@ -1301,7 +1303,8 @@ export async function parseZipArchive(
         }
       }
     } catch (err) {
-      console.warn('Failed to parse json file from zip:', jFile.name, err);
+      // A corrupt source JSON must stop the import; silently skipping it creates partial catalogues.
+      throw new Error(`خواندن فایل JSON در ZIP ناموفق بود: ${jFile.name} — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1582,10 +1585,22 @@ export async function parseZipArchive(
   }
 
   const batchName = customBatchName || (file && 'name' in file && typeof (file as any).name === 'string' ? (file as any).name : 'بسته فایل زیپ');
+  const sourceRecordsCount =
+    (sessionObj.sellers || []).filter(Boolean).length +
+    (sessionObj.buyers || []).filter(Boolean).length;
   const result = parseSessionJson(sessionObj, imageMap, textMap, batchName);
+  const skippedRecordsCount = Math.max(0, sourceRecordsCount - result.listings.length);
+
+  if (skippedRecordsCount > 0 || result.errorsCount > 0) {
+    throw new Error(
+      `پردازش ZIP کامل نبود؛ ${sourceRecordsCount} رکورد منبع شناسایی شد اما ${result.listings.length} رکورد قابل ثبت بود و ${skippedRecordsCount} رکورد رد شد. هیچ داده‌ای جایگزین نشد.`
+    );
+  }
 
   return {
     ...result,
+    sourceRecordsCount,
+    skippedRecordsCount,
     extractedImagesCount: imageMap.size,
   };
 }

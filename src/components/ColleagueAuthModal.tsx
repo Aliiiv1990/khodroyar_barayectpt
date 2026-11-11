@@ -27,8 +27,6 @@ interface ColleagueAuthModalProps {
   onSuccess: (role: 'colleague' | 'admin') => void;
   onLogout: () => void;
   onOpenDataManager?: () => void;
-  defaultColleaguePin?: string;
-  defaultAdminPin?: string;
   promptMessage?: string;
 }
 
@@ -39,13 +37,12 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
   onSuccess,
   onLogout,
   onOpenDataManager,
-  defaultColleaguePin = '1234',
-  defaultAdminPin = '8888',
   promptMessage,
 }) => {
   const [pin, setPin] = useState('');
   const [error, setError] = useState(false);
   const [showPinEntryWhileLogged, setShowPinEntryWhileLogged] = useState(false);
+  const [isChecking, setIsChecking] = useState(false);
 
   // Reset PIN input state every time the modal opens
   useEffect(() => {
@@ -53,52 +50,53 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
       setPin('');
       setError(false);
       setShowPinEntryWhileLogged(false);
+      setIsChecking(false);
     }
   }, [isOpen]);
 
-  const evaluatePin = useCallback(
-    (rawCandidate: string) => {
-      const candidate = toEnglishDigits(rawCandidate).trim();
-      const customAdminPin =
-        (typeof window !== 'undefined' && localStorage.getItem('car_custom_admin_pin')) ||
-        defaultAdminPin;
-      const customColleaguePin =
-        (typeof window !== 'undefined' && localStorage.getItem('car_custom_colleague_pin')) ||
-        defaultColleaguePin;
-
-      if (candidate === customAdminPin || candidate === defaultAdminPin) {
-        setError(false);
-        setPin('');
-        onSuccess('admin');
-        onClose();
-        return true;
+  // Verify the PIN on the server. The browser never stores or contains shared PINs.
+  const evaluatePin = useCallback(async (rawCandidate: string): Promise<boolean> => {
+    if (isChecking) return false;
+    setIsChecking(true);
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: toEnglishDigits(rawCandidate).trim() }),
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok || (result?.role !== 'admin' && result?.role !== 'colleague')) {
+        return false;
       }
-      if (candidate === customColleaguePin || candidate === defaultColleaguePin) {
-        setError(false);
-        setPin('');
-        onSuccess('colleague');
-        onClose();
-        return true;
-      }
+      setError(false);
+      setPin('');
+      onSuccess(result.role);
+      onClose();
+      return true;
+    } catch {
       return false;
-    },
-    [defaultAdminPin, defaultColleaguePin, onClose, onSuccess]
-  );
+    } finally {
+      setIsChecking(false);
+    }
+  }, [isChecking, onClose, onSuccess]);
 
   const handleDigitInput = useCallback(
     (rawDigit: string) => {
       const digit = toEnglishDigits(rawDigit);
-      if (!/^\d$/.test(digit)) return;
+      if (isChecking || !/^\d$/.test(digit)) return;
 
       setPin((prev) => {
         if (prev.length >= 4) return prev;
         const nextPin = prev + digit;
         if (nextPin.length === 4) {
           setTimeout(() => {
-            if (!evaluatePin(nextPin)) {
-              setError(true);
-              setPin('');
-            }
+            void evaluatePin(nextPin).then((accepted) => {
+              if (!accepted) {
+                setError(true);
+                setPin('');
+              }
+            });
           }, 80);
         } else {
           setError(false);
@@ -106,7 +104,7 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
         return nextPin;
       });
     },
-    [evaluatePin]
+    [evaluatePin, isChecking]
   );
 
   const handleBackspace = useCallback(() => {
@@ -312,7 +310,7 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
             {error && (
               <div className="flex items-center justify-center gap-1.5 text-xs font-bold text-red-600 dark:text-red-300 mb-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/60 py-2 px-3 rounded-xl">
                 <ShieldAlert className="w-4 h-4 shrink-0" />
-                <span>رمز واردشده معتبر نیست. لطفاً دوباره تلاش کنید.</span>
+                <span>رمز ورود معتبر نیست یا سرور در دسترس نیست. دوباره تلاش کنید.</span>
               </div>
             )}
 
@@ -332,7 +330,7 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
               <button
                 type="button"
                 onClick={handleClearPin}
-                disabled={pin.length === 0}
+                disabled={pin.length === 0 || isChecking}
                 className="py-3.5 bg-slate-100 dark:bg-slate-800/90 hover:bg-slate-200 dark:hover:bg-slate-700 active:bg-slate-300 disabled:opacity-40 rounded-xl font-bold text-xs text-slate-600 dark:text-slate-300 flex items-center justify-center gap-1 transition-colors cursor-pointer select-none"
                 title="پاک کردن"
               >

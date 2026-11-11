@@ -1,8 +1,10 @@
 import express from 'express';
+import { createHash, createHmac, timingSafeEqual, randomBytes } from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import JSZip from 'jszip';
+import { Pool, type PoolClient } from 'pg';
 import {
   parseZipArchive,
   parseSessionJson,
@@ -16,6 +18,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+// Liara runs behind a trusted reverse proxy; use the client IP for login throttling.
+app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT) || 3000;
 const isProd = process.env.NODE_ENV === 'production' || fs.existsSync(path.resolve(__dirname, 'dist', 'index.html'));
 
@@ -32,6 +36,204 @@ app.use((req, res, next) => {
     return res.sendStatus(200);
   }
   next();
+});
+
+// Server-verified PIN authentication. No PIN or session signing key is shipped to the browser.
+type AuthRole = 'admin' | 'colleague';
+interface AuthSessionPayload {
+  role: AuthRole;
+  expiresAt: number;
+  nonce: string;
+}
+// Development-only defaults preserve the local preview workflow. Production
+// never has defaults: startup fails until the operator supplies private secrets.
+const ADMIN_PIN = String(process.env.ADMIN_PIN || (!isProd ? '8888' : '')).trim();
+const COLLEAGUE_PIN = String(process.env.COLLEAGUE_PIN || (!isProd ? '1234' : '')).trim();
+const SESSION_SECRET = String(
+  process.env.SESSION_SECRET || (!isProd ? 'local-development-session-secret-do-not-use-in-production' : '')
+);
+const AUTH_COOKIE_NAME = 'khodroyar_session';
+const AUTH_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const loginAttempts = new Map<string, { windowStartedAt: number; count: number; blockedUntil: number }>();
+
+function isAuthConfigured(): boolean {
+  return /^\d{4}$/.test(ADMIN_PIN) &&
+    /^\d{4}$/.test(COLLEAGUE_PIN) &&
+    ADMIN_PIN !== COLLEAGUE_PIN &&
+    SESSION_SECRET.length >= 32;
+}
+
+function constantTimePinMatch(candidate: string, expected: string): boolean {
+  const candidateDigest = createHash('sha256').update(candidate).digest();
+  const expectedDigest = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(candidateDigest, expectedDigest);
+}
+
+function readCookie(req: express.Request, cookieName: string): string {
+  const cookieHeader = String(req.headers.cookie || '');
+  for (const part of cookieHeader.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() === cookieName) {
+      return part.slice(separator + 1).trim();
+    }
+  }
+  return '';
+}
+
+function createAuthToken(role: AuthRole): string {
+  const payload: AuthSessionPayload = {
+    role,
+    expiresAt: Date.now() + AUTH_SESSION_TTL_MS,
+    nonce: randomBytes(12).toString('hex'),
+  };
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = createHmac('sha256', SESSION_SECRET).update(encodedPayload).digest('base64url');
+  return `${encodedPayload}.${signature}`;
+}
+
+function readAuthSession(req: express.Request): AuthSessionPayload | null {
+  if (!isAuthConfigured()) return null;
+  const token = readCookie(req, AUTH_COOKIE_NAME);
+  const [encodedPayload, signature] = token.split('.');
+  if (!encodedPayload || !signature) return null;
+
+  const expectedSignature = createHmac('sha256', SESSION_SECRET).update(encodedPayload).digest('base64url');
+  const received = Buffer.from(signature);
+  const expected = Buffer.from(expectedSignature);
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
+
+  try {
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as AuthSessionPayload;
+    if (
+      (payload.role !== 'admin' && payload.role !== 'colleague') ||
+      !Number.isFinite(payload.expiresAt) ||
+      payload.expiresAt <= Date.now()
+    ) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function setAuthCookie(res: express.Response, token: string, maxAgeSeconds: number): void {
+  const secureFlag = isProd ? '; Secure' : '';
+  res.setHeader(
+    'Set-Cookie',
+    `${AUTH_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureFlag}`
+  );
+}
+
+function isAdminApiPath(pathName: string, method: string): boolean {
+  if (pathName === '/export' || pathName === '/export/liara-zip') return true;
+  if (pathName.startsWith('/admin/')) return true;
+  if (pathName.startsWith('/listings/') && method === 'DELETE') return true;
+  return false;
+}
+
+function isColleagueWritePath(pathName: string, method: string): boolean {
+  if (pathName === '/listings' && method === 'POST') return true;
+  if (pathName.startsWith('/listings/') && method === 'PUT') return true;
+  if (pathName === '/listings/update' && method === 'POST') return true;
+  return false;
+}
+
+// Protect all write/admin APIs even when the browser UI is bypassed or scripted.
+app.use('/api', (req, res, next) => {
+  const pathName = req.path;
+  const session = readAuthSession(req);
+  res.locals.authRole = session?.role || (!isProd && !isAuthConfigured() ? 'admin' : 'guest');
+
+  if (
+    pathName.startsWith('/auth/') ||
+    pathName === '/health' ||
+    pathName === '/live-sync' ||
+    pathName.startsWith('/images/') ||
+    pathName === '/listings' && req.method === 'GET' ||
+    pathName === '/sync-meta' && req.method === 'GET'
+  ) {
+    return next();
+  }
+
+  // Keep local development usable without exposing insecure built-in PINs.
+  if (!isProd && !isAuthConfigured()) return next();
+  if (!isAuthConfigured()) {
+    return res.status(503).json({
+      success: false,
+      error: 'ورود امن سرور پیکربندی نشده است؛ ADMIN_PIN، COLLEAGUE_PIN و SESSION_SECRET را در متغیرهای محیطی تنظیم کنید.',
+    });
+  }
+
+  if (isAdminApiPath(pathName, req.method)) {
+    if (!session) return res.status(401).json({ success: false, error: 'برای این عملیات باید وارد حساب مدیر شوید.' });
+    if (session.role !== 'admin') return res.status(403).json({ success: false, error: 'این عملیات فقط برای مدیر مجاز است.' });
+    return next();
+  }
+
+  if (isColleagueWritePath(pathName, req.method)) {
+    if (!session) return res.status(401).json({ success: false, error: 'برای ثبت یا ویرایش آگهی ابتدا وارد شوید.' });
+    return next();
+  }
+
+  return next();
+});
+
+app.post('/api/auth/login', (req, res) => {
+  if (!isAuthConfigured()) {
+    return res.status(503).json({
+      success: false,
+      error: 'ورود امن سرور پیکربندی نشده است؛ مدیر باید PINها و SESSION_SECRET را در متغیرهای محیطی تنظیم کند.',
+    });
+  }
+
+  const now = Date.now();
+  const address = String(req.ip || req.socket.remoteAddress || 'unknown');
+  const attempts = loginAttempts.get(address) || { windowStartedAt: now, count: 0, blockedUntil: 0 };
+  if (attempts.blockedUntil > now) {
+    return res.status(429).json({ success: false, error: 'تلاش‌های ورود بیش از حد مجاز است؛ بعداً دوباره امتحان کنید.' });
+  }
+  if (now - attempts.windowStartedAt > 15 * 60 * 1000) {
+    attempts.windowStartedAt = now;
+    attempts.count = 0;
+    attempts.blockedUntil = 0;
+  }
+
+  const pin = String(req.body?.pin || '').replace(/[^0-9]/g, '');
+  const role: AuthRole | null = constantTimePinMatch(pin, ADMIN_PIN)
+    ? 'admin'
+    : constantTimePinMatch(pin, COLLEAGUE_PIN)
+      ? 'colleague'
+      : null;
+
+  if (!role) {
+    attempts.count += 1;
+    if (attempts.count >= 5) attempts.blockedUntil = now + 15 * 60 * 1000;
+    loginAttempts.set(address, attempts);
+    return res.status(401).json({ success: false, error: 'رمز ورود معتبر نیست.' });
+  }
+
+  loginAttempts.delete(address);
+  const expiresAt = now + AUTH_SESSION_TTL_MS;
+  setAuthCookie(res, createAuthToken(role), Math.floor(AUTH_SESSION_TTL_MS / 1000));
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json({ success: true, role, expiresAt });
+});
+
+app.get('/api/auth/session', (req, res) => {
+  const session = readAuthSession(req);
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json({
+    authenticated: Boolean(session),
+    role: session?.role || 'guest',
+    expiresAt: session?.expiresAt || null,
+  });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  setAuthCookie(res, '', 0);
+  return res.json({ success: true });
 });
 
 // Database file path resolution (Liara Persistent Disk at /data or local fallback)
@@ -210,14 +412,447 @@ function readDatabaseFromDisk(): DatabasePayload {
   };
 }
 
-// In-memory primary store for zero-latency responses without blocking event loop
+// PostgreSQL is the shared source of truth when PG_URI (Liara) or DATABASE_URL is configured.
+// Without either variable, the existing persistent JSON-file mode remains available for local development.
 let memoryDb: DatabasePayload = readDatabaseFromDisk();
 let diskSaveTimeout: NodeJS.Timeout | null = null;
 let isWritingToDisk = false;
 let pendingDiskSave = false;
+let postgresDirty = false;
+let postgresLastLoadedVersion = '';
 
-// Asynchronous, debounced disk saver that never blocks the Node.js event loop
+const pgConnectionString = process.env.PG_URI || process.env.DATABASE_URL || '';
+const postgresPool: Pool | null = pgConnectionString
+  ? new Pool({
+      connectionString: pgConnectionString,
+      max: Math.max(2, Math.min(10, Number(process.env.PG_POOL_MAX) || 5)),
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+      statement_timeout: 60000,
+      application_name: 'khodroyar-car-exhibition',
+    })
+  : null;
+
+const POSTGRES_ADVISORY_LOCK_KEY = '7319042202611';
+
+function normalizeDatabasePayload(payload: any): DatabasePayload {
+  if (Array.isArray(payload)) {
+    return {
+      revision: 1,
+      lastUpdated: new Date().toISOString(),
+      publishedBy: 'سامانه',
+      hiddenBatches: [],
+      listings: payload,
+      tombstones: [],
+      confirmedBatches: {},
+    };
+  }
+  return {
+    revision: typeof payload?.revision === 'number' ? payload.revision : 1,
+    lastUpdated: payload?.lastUpdated || new Date().toISOString(),
+    publishedBy: payload?.publishedBy || 'مدیر سیستم',
+    hiddenBatches: Array.isArray(payload?.hiddenBatches) ? payload.hiddenBatches : [],
+    listings: Array.isArray(payload?.listings) ? payload.listings : [],
+    tombstones: Array.isArray(payload?.tombstones) ? payload.tombstones : [],
+    confirmedBatches:
+      payload?.confirmedBatches && typeof payload.confirmedBatches === 'object'
+        ? payload.confirmedBatches
+        : {},
+  };
+}
+
+function safeImageStorageId(value: unknown): string {
+  const id = String(value ?? '').trim();
+  return id.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180) || 'unknown-image';
+}
+
+function safeImagePath(imagesDir: string, fileName: string): string | null {
+  const root = path.resolve(imagesDir);
+  const candidate = path.resolve(root, fileName);
+  if (candidate === root || !candidate.startsWith(root + path.sep)) return null;
+  return candidate;
+}
+
+function parseImageDataUrl(value: unknown): { buffer: Buffer; mimeType: string; extension: string } | null {
+  if (typeof value !== 'string' || !value.startsWith('data:image/')) return null;
+
+  const base64Match = value.match(/^data:(image\/[a-zA-Z0-9.+-]+)(?:;charset=[^;,]+)?;base64,([\s\S]+)$/i);
+  if (base64Match) {
+    const mimeType = base64Match[1].toLowerCase();
+    const extension =
+      mimeType === 'image/jpeg' ? 'jpg' :
+      mimeType === 'image/svg+xml' ? 'svg' :
+      mimeType.split('/')[1].replace('jpeg', 'jpg');
+    const buffer = Buffer.from(base64Match[2].replace(/\s+/g, ''), 'base64');
+    return buffer.length ? { buffer, mimeType, extension } : null;
+  }
+
+  const svgMatch = value.match(/^data:image\/svg\+xml(?:;charset=[^;,]+)?,([\s\S]+)$/i);
+  if (svgMatch) {
+    try {
+      const svg = decodeURIComponent(svgMatch[1]);
+      return { buffer: Buffer.from(svg, 'utf8'), mimeType: 'image/svg+xml', extension: 'svg' };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function persistImageVariantToDisk(
+  listingId: unknown,
+  variant: 'thumb' | 'full',
+  dataUrl: unknown
+): Promise<boolean> {
+  const parsed = parseImageDataUrl(dataUrl);
+  if (!parsed) return false;
+
+  const safeId = safeImageStorageId(listingId);
+  const imagesDir = getImagesDir();
+  await fs.promises.mkdir(imagesDir, { recursive: true });
+  const fileName = `${safeId}.${variant}.${parsed.extension}`;
+  const targetPath = path.join(imagesDir, fileName);
+  await fs.promises.writeFile(targetPath, parsed.buffer);
+  diskImageSet.add(fileName);
+  diskImageSet.add(fileName.replace(/\.[^/.]+$/, ''));
+  return true;
+}
+
+async function prepareListingsForPostgres(listings: any[]): Promise<any[]> {
+  const prepared: any[] = [];
+  for (const source of listings) {
+    const listing = { ...source };
+    const thumb = listing.imageThumbnailBase64 || '';
+    const full = listing.imageFullBase64 || '';
+    const sameImageVariant = Boolean(thumb && full && thumb === full);
+    const thumbStored = thumb ? await persistImageVariantToDisk(listing.id, 'thumb', thumb) : false;
+    const fullStored = full && !sameImageVariant
+      ? await persistImageVariantToDisk(listing.id, 'full', full)
+      : false;
+
+    // Raster data URLs are stored on /data, not as huge base64 strings in PostgreSQL.
+    // If the thumbnail and full image are identical, store only one disk copy; the
+    // image route falls back to the stored variant for either requested size.
+    // Small SVG placeholders remain inline so a vector fallback is always available.
+    if (thumbStored && !String(thumb).startsWith('data:image/svg+xml')) listing.imageThumbnailBase64 = '';
+    if ((fullStored || (sameImageVariant && thumbStored)) && !String(full).startsWith('data:image/svg+xml')) {
+      listing.imageFullBase64 = '';
+    }
+    if (thumbStored || fullStored) listing.hasPhoto = true;
+    prepared.push(listing);
+  }
+  return prepared;
+}
+
+async function loadPostgresSnapshot(client: PoolClient): Promise<void> {
+  const stateResult = await client.query(
+    'SELECT revision, last_updated, published_by, hidden_batches, tombstones, confirmed_batches, updated_at FROM car_app_state WHERE id = 1'
+  );
+  const state = stateResult.rows[0];
+  if (!state) {
+    throw new Error('PostgreSQL application state row is missing.');
+  }
+
+  const stateVersion = state.updated_at instanceof Date
+    ? state.updated_at.toISOString()
+    : String(state.updated_at || '');
+  if (stateVersion && stateVersion === postgresLastLoadedVersion) {
+    return;
+  }
+
+  const listingResult = await client.query(
+    'SELECT data FROM car_listings ORDER BY created_at DESC NULLS LAST, id ASC'
+  );
+
+  memoryDb = {
+    revision: Number(state.revision) || 1,
+    lastUpdated: state.last_updated || new Date().toISOString(),
+    publishedBy: state.published_by || 'مدیر سیستم',
+    hiddenBatches: Array.isArray(state.hidden_batches) ? state.hidden_batches : [],
+    listings: listingResult.rows.map((row: any) => row.data),
+    tombstones: Array.isArray(state.tombstones) ? state.tombstones : [],
+    confirmedBatches:
+      state.confirmed_batches && typeof state.confirmed_batches === 'object'
+        ? state.confirmed_batches
+        : {},
+  };
+  postgresLastLoadedVersion = stateVersion;
+}
+
+async function persistPostgresSnapshot(client: PoolClient): Promise<void> {
+  const preparedListings = await prepareListingsForPostgres(memoryDb.listings);
+  const seenIds = new Set<string>();
+  const rows = preparedListings.map((item) => {
+    const id = String(item?.id ?? '').trim();
+    if (!id) throw new Error('ذخیره‌سازی متوقف شد: یک آگهی شناسه خالی دارد.');
+    if (seenIds.has(id)) throw new Error(`ذخیره‌سازی متوقف شد: شناسه تکراری ${id} در فهرست وجود دارد.`);
+    seenIds.add(id);
+
+    const createdAtValue = item.createdAt ? new Date(item.createdAt) : null;
+    const createdAt =
+      createdAtValue && !Number.isNaN(createdAtValue.getTime())
+        ? createdAtValue.toISOString()
+        : null;
+
+    return {
+      id,
+      batch_name: String(item.importBatchName || ''),
+      listing_type: String(item.type || 'sale'),
+      created_at: createdAt,
+      data: item,
+    };
+  });
+
+  await client.query('BEGIN');
+  try {
+    const ids = rows.map((item) => item.id);
+    await client.query(
+      'DELETE FROM car_listings WHERE NOT (id = ANY($1::text[]))',
+      [ids]
+    );
+
+    const chunkSize = 500;
+    for (let offset = 0; offset < rows.length; offset += chunkSize) {
+      const chunk = rows.slice(offset, offset + chunkSize);
+      await client.query(
+        `INSERT INTO car_listings (id, batch_name, listing_type, created_at, data)
+         SELECT
+           x.id,
+           COALESCE(x.batch_name, ''),
+           COALESCE(x.listing_type, 'sale'),
+           NULLIF(x.created_at, '')::timestamptz,
+           x.data
+         FROM jsonb_to_recordset($1::jsonb) AS x(
+           id text,
+           batch_name text,
+           listing_type text,
+           created_at text,
+           data jsonb
+         )
+         ON CONFLICT (id) DO UPDATE SET
+           batch_name = EXCLUDED.batch_name,
+           listing_type = EXCLUDED.listing_type,
+           created_at = EXCLUDED.created_at,
+           data = EXCLUDED.data
+         WHERE car_listings.data IS DISTINCT FROM EXCLUDED.data
+            OR car_listings.batch_name IS DISTINCT FROM EXCLUDED.batch_name
+            OR car_listings.listing_type IS DISTINCT FROM EXCLUDED.listing_type
+            OR car_listings.created_at IS DISTINCT FROM EXCLUDED.created_at`,
+        [JSON.stringify(chunk)]
+      );
+    }
+
+    await client.query(
+      `INSERT INTO car_app_state (
+         id, revision, last_updated, published_by, hidden_batches, tombstones, confirmed_batches, updated_at
+       ) VALUES (1, $1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         revision = EXCLUDED.revision,
+         last_updated = EXCLUDED.last_updated,
+         published_by = EXCLUDED.published_by,
+         hidden_batches = EXCLUDED.hidden_batches,
+         tombstones = EXCLUDED.tombstones,
+         confirmed_batches = EXCLUDED.confirmed_batches,
+         updated_at = NOW()`,
+      [
+        memoryDb.revision || 1,
+        memoryDb.lastUpdated || new Date().toISOString(),
+        memoryDb.publishedBy || 'مدیر سیستم',
+        JSON.stringify(memoryDb.hiddenBatches || []),
+        JSON.stringify(memoryDb.tombstones || []),
+        JSON.stringify(memoryDb.confirmedBatches || {}),
+      ]
+    );
+    await client.query('COMMIT');
+
+    const versionResult = await client.query('SELECT updated_at FROM car_app_state WHERE id = 1');
+    const savedVersion = versionResult.rows[0]?.updated_at;
+    postgresLastLoadedVersion = savedVersion instanceof Date
+      ? savedVersion.toISOString()
+      : String(savedVersion || '');
+
+    // Keep the active process lean as well as the persistent DB.
+    memoryDb.listings = preparedListings;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  }
+}
+
+async function initializePostgresStore(): Promise<void> {
+  if (isProd && !isAuthConfigured()) {
+    throw new Error(
+      'Secure server authentication is required in production. Configure distinct 4-digit ADMIN_PIN and COLLEAGUE_PIN values plus a random SESSION_SECRET of at least 32 characters.'
+    );
+  }
+
+  if (!postgresPool) {
+    console.log('Database backend: persistent JSON file (PG_URI / DATABASE_URL not configured)');
+    return;
+  }
+
+  if (process.env.NODE_ENV === 'production' && !fs.existsSync('/data')) {
+    throw new Error(
+      'PostgreSQL mode requires the Liara persistent disk mounted at /data because listing photos are stored there. Attach the data disk before deployment.'
+    );
+  }
+
+  const client = await postgresPool.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock($1::bigint)', [POSTGRES_ADVISORY_LOCK_KEY]);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS car_app_state (
+        id SMALLINT PRIMARY KEY CHECK (id = 1),
+        revision BIGINT NOT NULL DEFAULT 1,
+        last_updated TEXT NOT NULL,
+        published_by TEXT NOT NULL DEFAULT 'مدیر سیستم',
+        hidden_batches JSONB NOT NULL DEFAULT '[]'::jsonb,
+        tombstones JSONB NOT NULL DEFAULT '[]'::jsonb,
+        confirmed_batches JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS car_listings (
+        id TEXT PRIMARY KEY,
+        batch_name TEXT NOT NULL DEFAULT '',
+        listing_type TEXT NOT NULL DEFAULT 'sale',
+        created_at TIMESTAMPTZ,
+        data JSONB NOT NULL
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS car_listings_batch_idx ON car_listings (batch_name)');
+    await client.query('CREATE INDEX IF NOT EXISTS car_listings_type_created_idx ON car_listings (listing_type, created_at DESC)');
+
+    const existingState = await client.query('SELECT id FROM car_app_state WHERE id = 1');
+    if (existingState.rowCount === 0) {
+      const existingListingRows = await client.query('SELECT COUNT(*)::bigint AS total FROM car_listings');
+      if (Number(existingListingRows.rows[0]?.total || 0) > 0) {
+        throw new Error(
+          'جدول car_listings در PostgreSQL از قبل داده دارد اما سطر وضعیت برنامه موجود نیست؛ برای جلوگیری از بازنویسی داده‌های موجود، مهاجرت خودکار متوقف شد.'
+        );
+      }
+      const legacyPath = getDbFilePath();
+      if (fs.existsSync(legacyPath)) {
+        // Validate the legacy file before making a backup or inserting anything.
+        const rawLegacy = await fs.promises.readFile(legacyPath, 'utf8');
+        const parsedLegacy = JSON.parse(rawLegacy);
+        if (!Array.isArray(parsedLegacy) && !Array.isArray(parsedLegacy?.listings)) {
+          throw new Error('فایل دیتابیس قدیمی ساختار معتبری ندارد؛ مهاجرت PostgreSQL برای جلوگیری از از دست رفتن داده متوقف شد.');
+        }
+
+        const backupPath = `${legacyPath}.pre-postgres-${new Date().toISOString().replace(/[:.]/g, '-')}.bak`;
+        await fs.promises.copyFile(legacyPath, backupPath);
+        console.log(`Legacy database backup created: ${backupPath}`);
+        memoryDb = normalizeDatabasePayload(parsedLegacy);
+      } else if (isProd && process.env.ALLOW_EMPTY_POSTGRES_BOOTSTRAP !== 'true') {
+        throw new Error(
+          `فایل دیتابیس قدیمی پیدا نشد: ${legacyPath}. برای جلوگیری از شروع ناخواسته با دیتابیس خالی، مهاجرت متوقف شد. اگر دیتابیس واقعاً باید خالی شروع شود، فقط پس از بررسی دیسک /data مقدار ALLOW_EMPTY_POSTGRES_BOOTSTRAP=true را تنظیم کنید.`
+        );
+      }
+
+      await persistPostgresSnapshot(client);
+      postgresDirty = false;
+      console.log(`Legacy database imported into PostgreSQL: ${memoryDb.listings.length} listings`);
+    } else {
+      await loadPostgresSnapshot(client);
+    }
+
+    refreshDiskImageSet();
+    console.log(`Database backend: PostgreSQL (${memoryDb.listings.length} listings)`);
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1::bigint)', [POSTGRES_ADVISORY_LOCK_KEY]).catch(() => undefined);
+    client.release();
+  }
+}
+
+// Serialize stateful API requests across all app instances. Each request reads the
+// current committed snapshot; mutations are persisted transactionally before the
+// HTTP response is sent. Long-lived SSE and image requests do not hold this lock.
+app.use('/api', async (req, res, next) => {
+  if (
+    !postgresPool ||
+    req.path === '/live-sync' ||
+    req.path.startsWith('/images/') ||
+    req.path === '/export/liara-zip'
+  ) {
+    return next();
+  }
+
+  let client: PoolClient | null = null;
+  let released = false;
+  const releaseClient = async () => {
+    if (!client || released) return;
+    released = true;
+    try {
+      await client.query('SELECT pg_advisory_unlock($1::bigint)', [POSTGRES_ADVISORY_LOCK_KEY]);
+    } catch (error) {
+      console.warn('Could not release PostgreSQL request lock cleanly:', error);
+    } finally {
+      client.release();
+    }
+  };
+
+  try {
+    client = await postgresPool.connect();
+    await client.query('SELECT pg_advisory_lock($1::bigint)', [POSTGRES_ADVISORY_LOCK_KEY]);
+    await loadPostgresSnapshot(client);
+
+    const originalSend = res.send.bind(res);
+    let sendStarted = false;
+    res.once('finish', () => { void releaseClient(); });
+    res.once('close', () => {
+      // A client may disconnect before the response is sent. Discard its
+      // uncommitted in-memory mutation and force the next request to reload PG.
+      if (!sendStarted && postgresDirty) {
+        postgresDirty = false;
+        postgresLastLoadedVersion = '';
+      }
+      void releaseClient();
+    });
+
+    (res as any).send = (body?: any) => {
+      if (sendStarted) return res;
+      if (!postgresDirty) return originalSend(body);
+
+      sendStarted = true;
+      void persistPostgresSnapshot(client as PoolClient)
+        .then(() => {
+          postgresDirty = false;
+          originalSend(body);
+        })
+        .catch((error) => {
+          postgresDirty = false;
+          postgresLastLoadedVersion = '';
+          console.error('PostgreSQL transaction failed; refusing to acknowledge the write:', error);
+          res.statusCode = 503;
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          originalSend(JSON.stringify({
+            success: false,
+            error: 'ذخیره‌سازی پایدار در PostgreSQL ناموفق بود؛ تغییرات تأیید نشد. اتصال دیتابیس و دیسک تصاویر را بررسی کنید.',
+          }));
+        });
+      return res;
+    };
+
+    next();
+  } catch (error) {
+    console.error('PostgreSQL request middleware failed:', error);
+    if (client && !released) await releaseClient();
+    res.status(503).json({
+      success: false,
+      error: 'اتصال یا خواندن PostgreSQL ناموفق است؛ برای جلوگیری از اختلاف داده‌ها، درخواست انجام نشد.',
+    });
+  }
+});
+
+// Asynchronous, debounced file saver for local mode. PostgreSQL writes are flushed
+// transactionally by the API middleware immediately before sending the response.
 function queueDiskSave() {
+  if (postgresPool) {
+    postgresDirty = true;
+    return;
+  }
   if (diskSaveTimeout) clearTimeout(diskSaveTimeout);
   diskSaveTimeout = setTimeout(async () => {
     if (isWritingToDisk) {
@@ -267,12 +902,17 @@ function pruneOldServerListings(listings: any[]) {
 const sseClients = new Set<express.Response>();
 
 function broadcastSyncEvent(eventType = 'update', extraData: Record<string, any> = {}) {
+  const safeExtraData = { ...extraData };
+  if (safeExtraData.listing && typeof safeExtraData.listing === 'object') {
+    const { phoneNumber: _phoneNumber, imageFileName: _imageFileName, mediaId: _mediaId, ...publicListing } = safeExtraData.listing;
+    safeExtraData.listing = publicListing;
+  }
   const payload = JSON.stringify({
     type: eventType,
     lastUpdated: memoryDb.lastUpdated,
     hiddenBatches: memoryDb.hiddenBatches || [],
     totalListings: memoryDb.listings.length,
-    ...extraData,
+    ...safeExtraData,
   });
   const sseMsg = `data: ${payload}\n\n`;
 
@@ -297,7 +937,9 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     platform: 'Liara Cloud (Node.js)',
-    dbLocation: getDbFilePath(),
+    dbBackend: postgresPool ? 'postgresql' : 'json-file',
+    dbLocation: postgresPool ? 'PostgreSQL DBaaS' : getDbFilePath(),
+    imageStorage: fs.existsSync('/data') ? '/data/images (persistent disk)' : 'local filesystem (not persistent across container replacement)',
     isLiaraDisk: fs.existsSync('/data'),
     totalListings: active.length,
     salesCount,
@@ -385,27 +1027,42 @@ app.get('/api/images/:id', (req, res) => {
     const imagesDir = getImagesDir();
 
     // 1. Check physical files on persistent disk (/data/images/)
-    const candidates: string[] = [
-      path.join(imagesDir, `${targetId}.jpg`),
-      path.join(imagesDir, `${targetId}.png`),
-      path.join(imagesDir, `${targetId}.webp`),
-      path.join(imagesDir, targetId),
-      path.join(imagesDir, `${rawParam}.jpg`),
-      path.join(imagesDir, rawParam),
-    ];
+    const safeTargetId = safeImageStorageId(targetId);
+    const candidates: string[] = [];
+    const addImageCandidate = (fileName: string) => {
+      const safePath = safeImagePath(imagesDir, fileName);
+      if (safePath) candidates.push(safePath);
+    };
+
+    // Preferred PostgreSQL-mode image variants stored outside JSON in /data/images.
+    for (const ext of ['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'bmp', 'avif']) {
+      for (const variant of isFull ? ['full', 'thumb'] : ['thumb', 'full']) {
+        addImageCandidate(`${safeTargetId}.${variant}.${ext}`);
+      }
+    }
+
+    // Legacy ZIP/direct-upload image paths remain readable, but must stay below imagesDir.
+    addImageCandidate(`${targetId}.jpg`);
+    addImageCandidate(`${targetId}.png`);
+    addImageCandidate(`${targetId}.webp`);
+    addImageCandidate(targetId);
+    addImageCandidate(`${rawParam}.jpg`);
+    addImageCandidate(rawParam);
+
     if (found) {
       if (found.imageFileName && !found.imageFileName.toLowerCase().endsWith('.txt')) {
-        const baseName = found.imageFileName.split('/').pop() || found.imageFileName;
+        const baseName = path.basename(String(found.imageFileName).replace(/\\/g, '/'));
         const baseNoExt = baseName.replace(/\.[^/.]+$/, '');
-        candidates.push(path.join(imagesDir, baseName));
-        candidates.push(path.join(imagesDir, `${baseName}.jpg`));
-        candidates.push(path.join(imagesDir, `${baseNoExt}.jpg`));
-        candidates.push(path.join(imagesDir, `${baseNoExt}.png`));
-        candidates.push(path.join(imagesDir, `${baseNoExt}.webp`));
+        addImageCandidate(baseName);
+        addImageCandidate(`${baseName}.jpg`);
+        addImageCandidate(`${baseNoExt}.jpg`);
+        addImageCandidate(`${baseNoExt}.png`);
+        addImageCandidate(`${baseNoExt}.webp`);
       }
       if (found.mediaId) {
-        candidates.push(path.join(imagesDir, `${found.mediaId}.jpg`));
-        candidates.push(path.join(imagesDir, String(found.mediaId)));
+        const mediaId = path.basename(String(found.mediaId).replace(/\\/g, '/'));
+        addImageCandidate(`${mediaId}.jpg`);
+        addImageCandidate(mediaId);
       }
     }
 
@@ -425,7 +1082,10 @@ app.get('/api/images/:id', (req, res) => {
             let contentType = 'image/jpeg';
             if (filePath.endsWith('.png')) contentType = 'image/png';
             else if (filePath.endsWith('.webp')) contentType = 'image/webp';
+            else if (filePath.endsWith('.gif')) contentType = 'image/gif';
             else if (filePath.endsWith('.svg')) contentType = 'image/svg+xml';
+            else if (filePath.endsWith('.avif')) contentType = 'image/avif';
+            else if (filePath.endsWith('.bmp')) contentType = 'image/bmp';
 
             res.setHeader('Content-Type', contentType);
             res.setHeader('ETag', etag);
@@ -456,10 +1116,13 @@ app.get('/api/images/:id', (req, res) => {
           const mimeType = match[1];
           const buffer = Buffer.from(match[2], 'base64');
           // Asynchronously persist buffer to disk so subsequent reads hit the filesystem directly
-          fs.promises.writeFile(path.join(imagesDir, `${found.id}.jpg`), buffer).then(() => {
-            diskImageSet.add(String(found.id));
-            diskImageSet.add(`${found.id}.jpg`);
-          }).catch(() => {});
+          const fallbackImagePath = safeImagePath(imagesDir, `${safeImageStorageId(found.id)}.jpg`);
+          if (fallbackImagePath) {
+            fs.promises.writeFile(fallbackImagePath, buffer).then(() => {
+              diskImageSet.add(String(found.id));
+              diskImageSet.add(`${safeImageStorageId(found.id)}.jpg`);
+            }).catch(() => {});
+          }
 
           res.setHeader('Content-Type', mimeType);
           res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
@@ -532,14 +1195,27 @@ app.get('/api/listings', (req, res) => {
       };
     });
 
+    const isAuthorizedViewer = res.locals.authRole === 'admin' || res.locals.authRole === 'colleague';
+    const clientListings = isAuthorizedViewer
+      ? returnedListings
+      : returnedListings.map((item) => {
+          const {
+            phoneNumber: _phoneNumber,
+            imageFileName: _imageFileName,
+            mediaId: _mediaId,
+            ...publicItem
+          } = item;
+          return { ...publicItem, phoneNumber: '' };
+        });
+
     res.json({
       success: true,
       lastUpdated: memoryDb.lastUpdated,
       publishedBy: memoryDb.publishedBy,
-      total: returnedListings.length,
+      total: clientListings.length,
       totalAllBatches: activeListings.length,
       hiddenBatches: Array.from(hiddenSet),
-      listings: returnedListings,
+      listings: clientListings,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -883,13 +1559,16 @@ app.post('/api/admin/sync-images', (req, res) => {
         if (dataToSave && dataToSave.includes(';base64,')) {
           try {
             const buf = Buffer.from(dataToSave.split(';base64,')[1], 'base64');
-            fs.promises.writeFile(path.join(imagesDir, `${item.id}.jpg`), buf).catch(() => {});
+            const listingImagePath = safeImagePath(imagesDir, `${safeImageStorageId(item.id)}.jpg`);
+            if (listingImagePath) fs.promises.writeFile(listingImagePath, buf).catch(() => {});
             if (item.imageFileName && !item.imageFileName.toLowerCase().endsWith('.txt')) {
-              const baseName = item.imageFileName.split('/').pop() || item.imageFileName;
-              fs.promises.writeFile(path.join(imagesDir, baseName), buf).catch(() => {});
+              const baseName = path.basename(String(item.imageFileName).replace(/\\/g, '/'));
+              const namedImagePath = safeImagePath(imagesDir, baseName);
+              if (namedImagePath) fs.promises.writeFile(namedImagePath, buf).catch(() => {});
             }
             if (item.mediaId) {
-              fs.promises.writeFile(path.join(imagesDir, `${item.mediaId}.jpg`), buf).catch(() => {});
+              const mediaImagePath = safeImagePath(imagesDir, `${safeImageStorageId(item.mediaId)}.jpg`);
+              if (mediaImagePath) fs.promises.writeFile(mediaImagePath, buf).catch(() => {});
             }
           } catch {}
         }
@@ -945,6 +1624,9 @@ async function extractZipDirectlyToDisk(
   batchCount: number;
   sellersCount: number;
   buyersCount: number;
+  sourceRecordsCount: number;
+  skippedRecordsCount: number;
+  errorsCount: number;
   extractedImagesCount: number;
   batchName: string;
   revision: number;
@@ -1029,7 +1711,8 @@ async function extractZipDirectlyToDisk(
         }
       }
     } catch (err) {
-      console.warn('Failed to parse json file from zip:', jFile.name, err);
+      // Do not silently continue with a partial catalogue when a JSON source file is corrupt.
+      throw new Error(`خواندن فایل JSON در آرشیو ناموفق بود: ${jFile.name} — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1086,22 +1769,29 @@ async function extractZipDirectlyToDisk(
       const hasImageMagic = isJpeg || isPng || isGif || isWebp || isBmp;
 
       if (hasImageMagic) {
-        // Direct binary image: save to persistent disk!
+        // Direct binary image: save to persistent disk using safe path components.
         const ext = isPng ? '.png' : isWebp ? '.webp' : isGif ? '.gif' : '.jpg';
-        await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}${ext}`), nodeBuffer);
-        await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}.jpg`), nodeBuffer);
-        if (baseName !== idWithoutExt) {
-          await fs.promises.writeFile(path.join(imagesDir, baseName), nodeBuffer);
+        const safeEntryId = safeImageStorageId(idWithoutExt);
+        const primaryImagePath = safeImagePath(imagesDir, `${safeEntryId}${ext}`);
+        const legacyJpegPath = safeImagePath(imagesDir, `${safeEntryId}.jpg`);
+        if (primaryImagePath) await fs.promises.writeFile(primaryImagePath, nodeBuffer);
+        if (legacyJpegPath) await fs.promises.writeFile(legacyJpegPath, nodeBuffer);
+
+        const safeBaseName = path.basename(String(baseName).replace(/\\/g, '/'));
+        const namedImagePath = safeImagePath(imagesDir, safeBaseName);
+        if (baseName !== idWithoutExt && namedImagePath) {
+          await fs.promises.writeFile(namedImagePath, nodeBuffer);
         }
         const mappedFName = idToFileName.get(idWithoutExt) || idToFileName.get(baseName);
         if (mappedFName && mappedFName !== baseName) {
-          await fs.promises.writeFile(path.join(imagesDir, mappedFName), nodeBuffer);
+          const mappedImagePath = safeImagePath(imagesDir, path.basename(String(mappedFName).replace(/\\/g, '/')));
+          if (mappedImagePath) await fs.promises.writeFile(mappedImagePath, nodeBuffer);
         }
 
         diskImageSet.add(idWithoutExt);
-        diskImageSet.add(`${idWithoutExt}.jpg`);
-        diskImageSet.add(baseName);
-        if (mappedFName) diskImageSet.add(mappedFName);
+        diskImageSet.add(`${safeEntryId}.jpg`);
+        diskImageSet.add(safeBaseName);
+        if (mappedFName) diskImageSet.add(path.basename(String(mappedFName).replace(/\\/g, '/')));
         savedImagesCount++;
         continue;
       }
@@ -1117,20 +1807,26 @@ async function extractZipDirectlyToDisk(
           const match = rawStr.match(/^data:([^;]+);base64,(.+)$/);
           if (match) {
             const buf = Buffer.from(match[2], 'base64');
-            await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}.jpg`), buf);
-            await fs.promises.writeFile(path.join(imagesDir, baseName), buf);
+            const safeEntryId = safeImageStorageId(idWithoutExt);
+            const idImagePath = safeImagePath(imagesDir, `${safeEntryId}.jpg`);
+            const namedImagePath = safeImagePath(imagesDir, path.basename(String(baseName).replace(/\\/g, '/')));
+            if (idImagePath) await fs.promises.writeFile(idImagePath, buf);
+            if (namedImagePath) await fs.promises.writeFile(namedImagePath, buf);
             diskImageSet.add(idWithoutExt);
-            diskImageSet.add(`${idWithoutExt}.jpg`);
+            diskImageSet.add(`${safeEntryId}.jpg`);
             diskImageSet.add(baseName);
             savedImagesCount++;
             continue;
           }
         } else if (rawStr.startsWith('/9j/') || rawStr.startsWith('iVBORw0KGgo') || rawStr.startsWith('UklGR')) {
           const buf = Buffer.from(rawStr.replace(/\s+/g, ''), 'base64');
-          await fs.promises.writeFile(path.join(imagesDir, `${idWithoutExt}.jpg`), buf);
-          await fs.promises.writeFile(path.join(imagesDir, baseName), buf);
+          const safeEntryId = safeImageStorageId(idWithoutExt);
+          const idImagePath = safeImagePath(imagesDir, `${safeEntryId}.jpg`);
+          const namedImagePath = safeImagePath(imagesDir, path.basename(String(baseName).replace(/\\/g, '/')));
+          if (idImagePath) await fs.promises.writeFile(idImagePath, buf);
+          if (namedImagePath) await fs.promises.writeFile(namedImagePath, buf);
           diskImageSet.add(idWithoutExt);
-          diskImageSet.add(`${idWithoutExt}.jpg`);
+          diskImageSet.add(`${safeEntryId}.jpg`);
           diskImageSet.add(baseName);
           savedImagesCount++;
           continue;
@@ -1176,7 +1872,19 @@ async function extractZipDirectlyToDisk(
   }
 
   const batchName = customBatchName || `car_session_${new Date().toLocaleDateString('fa-IR').replace(/\//g, '_')}.zip`;
+  const sourceRecordsCount =
+    (sessionObj.sellers || []).filter(Boolean).length +
+    (sessionObj.buyers || []).filter(Boolean).length;
   const result = parseSessionJson(sessionObj, new Map(), textMap, batchName);
+  const skippedRecordsCount = Math.max(0, sourceRecordsCount - result.listings.length);
+
+  // Refuse to replace an existing batch with a silently incomplete parse.
+  // The original database remains untouched so the administrator can correct/retry the ZIP.
+  if (skippedRecordsCount > 0 || result.errorsCount > 0) {
+    throw new Error(
+      `پردازش ZIP کامل نبود؛ ${sourceRecordsCount} رکورد منبع شناسایی شد اما ${result.listings.length} رکورد قابل ثبت بود و ${skippedRecordsCount} رکورد رد شد. دیتابیس قبلی تغییر نکرد. فایل JSON و فیلدهای رکوردهای ردشده را بررسی کنید.`
+    );
+  }
 
   // Link images with zero RAM overhead (keep heavy base64 strings empty!)
   for (const item of result.listings) {
@@ -1219,6 +1927,9 @@ async function extractZipDirectlyToDisk(
     message: `فایل با موفقیت و معماری صفر-رم در دیسک دائمی لیارا پردازش شد: ${result.sellersCount} خودرو، ${result.buyersCount} متقاضی خرید و ${savedImagesCount} تصویر ذخیره شدند.`,
     total: memoryDb.listings.length,
     batchCount: result.listings.length,
+    sourceRecordsCount,
+    skippedRecordsCount,
+    errorsCount: result.errorsCount,
     sellersCount: result.sellersCount,
     buyersCount: result.buyersCount,
     extractedImagesCount: savedImagesCount,
@@ -1235,9 +1946,19 @@ async function extractZipDirectlyToDisk(
 // 1. POST /api/admin/upload-chunk/init: Initializes a chunked upload session or checks resume state
 app.post('/api/admin/upload-chunk/init', (req, res) => {
   try {
-    const { uploadId, fileName, fileSize, totalChunks, batchName, publishedBy } = req.body;
-    if (!uploadId || !totalChunks) {
-      return res.status(400).json({ success: false, error: 'پارامترهای شروع آپلود ناقص است.' });
+    const { uploadId, fileName, fileSize, totalChunks, batchName, publishedBy } = req.body || {};
+    const parsedTotalChunks = Number(totalChunks);
+    const parsedFileSize = Number(fileSize);
+    if (
+      typeof uploadId !== 'string' ||
+      !/^[a-zA-Z0-9_-]{8,80}$/.test(uploadId) ||
+      !Number.isSafeInteger(parsedTotalChunks) ||
+      parsedTotalChunks < 1 ||
+      parsedTotalChunks > 50000 ||
+      !Number.isSafeInteger(parsedFileSize) ||
+      parsedFileSize < 1
+    ) {
+      return res.status(400).json({ success: false, error: 'مشخصات فایل برای شروع آپلود معتبر نیست.' });
     }
 
     const uploadsDir = getUploadsDir();
@@ -1249,8 +1970,8 @@ app.post('/api/admin/upload-chunk/init', (req, res) => {
     const meta: ChunkUploadSession = {
       uploadId,
       fileName: fileName || 'archive.zip',
-      fileSize: Number(fileSize) || 0,
-      totalChunks: Number(totalChunks),
+      fileSize: parsedFileSize,
+      totalChunks: parsedTotalChunks,
       batchName: batchName || fileName || `car_session_${Date.now()}.zip`,
       publishedBy: publishedBy || 'مدیر سیستم',
       createdAt: Date.now(),
@@ -1286,9 +2007,10 @@ app.post(
   async (req, res) => {
     try {
       const uploadId = String(req.query.uploadId || '').trim();
-      const chunkIndex = parseInt(String(req.query.chunkIndex || '-1'), 10);
+      const chunkIndex = Number.parseInt(String(req.query.chunkIndex || '-1'), 10);
+      const declaredTotalChunks = Number.parseInt(String(req.query.totalChunks || '-1'), 10);
 
-      if (!uploadId || chunkIndex < 0) {
+      if (!/^[a-zA-Z0-9_-]{8,80}$/.test(uploadId) || !Number.isInteger(chunkIndex) || chunkIndex < 0) {
         return res.status(400).json({ success: false, error: 'شناسه یا شماره تکه نامعتبر است.' });
       }
 
@@ -1299,12 +2021,30 @@ app.post(
 
       const uploadsDir = getUploadsDir();
       const sessionDir = path.join(uploadsDir, uploadId);
-      if (!fs.existsSync(sessionDir)) {
-        fs.mkdirSync(sessionDir, { recursive: true });
+      const metaPath = path.join(sessionDir, 'meta.json');
+      if (!fs.existsSync(metaPath)) {
+        return res.status(409).json({ success: false, error: 'نشست آپلود وجود ندارد؛ درخواست شروع آپلود را دوباره ارسال کنید.' });
+      }
+      const meta = JSON.parse(await fs.promises.readFile(metaPath, 'utf8'));
+      if (
+        !Number.isInteger(meta.totalChunks) ||
+        chunkIndex >= meta.totalChunks ||
+        declaredTotalChunks !== meta.totalChunks
+      ) {
+        return res.status(400).json({ success: false, error: 'شماره تکه با مشخصات فایل آپلود هم‌خوانی ندارد.' });
+      }
+
+      const expectedLength = chunkIndex === meta.totalChunks - 1
+        ? meta.fileSize - chunkIndex * 1.5 * 1024 * 1024
+        : 1.5 * 1024 * 1024;
+      if (rawBuffer.length !== expectedLength) {
+        return res.status(400).json({ success: false, error: 'اندازه تکه ناقص یا نامعتبر است؛ این تکه دوباره ارسال شود.' });
       }
 
       const chunkPath = path.join(sessionDir, `chunk_${chunkIndex}.part`);
-      await fs.promises.writeFile(chunkPath, rawBuffer);
+      const tempChunkPath = `${chunkPath}.tmp`;
+      await fs.promises.writeFile(tempChunkPath, rawBuffer);
+      await fs.promises.rename(tempChunkPath, chunkPath);
 
       res.json({
         success: true,
@@ -1417,13 +2157,8 @@ app.post('/api/admin/upload-chunk/finalize', async (req, res) => {
       writeStream.on('error', reject);
     });
 
-    // Delete part files to free disk space immediately
-    for (let i = 0; i < totalChunks; i++) {
-      try {
-        fs.unlinkSync(path.join(sessionDir, `chunk_${i}.part`));
-      } catch {}
-    }
-
+    // Keep all chunks and the assembled ZIP until the API response confirms
+    // both extraction and the PostgreSQL transaction have succeeded.
     // Read stitched zip and extract directly to persistent disk
     const zipBuffer = await fs.promises.readFile(completeZipPath);
     const targetBatchName = customBatchName || meta.batchName || meta.fileName || `car_session_${Date.now()}.zip`;
@@ -1431,14 +2166,15 @@ app.post('/api/admin/upload-chunk/finalize', async (req, res) => {
 
     const extractResult = await extractZipDirectlyToDisk(zipBuffer, targetBatchName, targetPublishedBy);
 
-    // Clean up temporary session folder
-    try {
-      if (fs.existsSync(completeZipPath)) fs.unlinkSync(completeZipPath);
-      if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
-      fs.rmdirSync(sessionDir);
-    } catch (cleanupErr) {
-      console.warn('Could not clean up temporary upload directory:', cleanupErr);
-    }
+    // The PostgreSQL request middleware commits before the response is sent.
+    // Retain the upload on any non-2xx response so the admin can safely retry.
+    res.once('finish', () => {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        fs.promises.rm(sessionDir, { recursive: true, force: true }).catch((cleanupErr) => {
+          console.warn('Could not clean up completed upload directory:', cleanupErr);
+        });
+      }
+    });
 
     res.json(extractResult);
   } catch (err: any) {
@@ -1677,6 +2413,7 @@ app.get('/api/export/liara-zip', async (req, res) => {
         express: '^4.21.2',
         dotenv: '^17.2.3',
         jszip: '^3.10.2',
+        pg: '^8.16.3',
       },
     };
     zip.file('package.json', JSON.stringify(prodPackageJson, null, 2));
@@ -1710,7 +2447,10 @@ app.get('/api/export/liara-zip', async (req, res) => {
     zip.file('.liaraignore', 'node_modules/\n.git/\n.env\n.env.local\n.DS_Store\n');
 
     // 5. .env.example
-    zip.file('.env.example', 'PORT=3000\nNODE_ENV=production\n');
+    zip.file(
+      '.env.example',
+      'PORT=3000\nNODE_ENV=production\n# Liara PostgreSQL connection string\nPG_URI=postgresql://USER:PASSWORD@HOST:PORT/DATABASE\n'
+    );
 
     // 6. dist folder (all compiled frontend assets)
     const distPath = path.resolve(__dirname, 'dist');
@@ -1768,12 +2508,33 @@ async function setupFrontend() {
   }
 }
 
-setupFrontend().then(() => {
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`=================================================`);
-    console.log(`🚗 Car Exhibition Server is LIVE on Liara Cloud!`);
-    console.log(`📍 Listening on: http://0.0.0.0:${PORT}`);
-    console.log(`💾 Database file: ${getDbFilePath()}`);
-    console.log(`=================================================`);
+initializePostgresStore()
+  .then(() => setupFrontend())
+  .then(() => {
+    const server = app.listen(PORT, '0.0.0.0', () => {
+      console.log(`=================================================`);
+      console.log(`🚗 Car Exhibition Server is LIVE on Liara Cloud!`);
+      console.log(`📍 Listening on: http://0.0.0.0:${PORT}`);
+      console.log(`💾 Database backend: ${postgresPool ? 'PostgreSQL' : getDbFilePath()}`);
+      console.log(`=================================================`);
+    });
+
+    const shutdown = (signal: string) => {
+      console.log(`Received ${signal}; closing server and database pool...`);
+      server.close(() => {
+        if (postgresPool) {
+          postgresPool.end().finally(() => process.exit(0));
+        } else {
+          process.exit(0);
+        }
+      });
+      setTimeout(() => process.exit(1), 10000).unref();
+    };
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
+    process.once('SIGINT', () => shutdown('SIGINT'));
+  })
+  .catch((error) => {
+    console.error('Application startup failed; refusing unsafe file-mode fallback:', error);
+    if (postgresPool) postgresPool.end().finally(() => process.exit(1));
+    else process.exit(1);
   });
-});
