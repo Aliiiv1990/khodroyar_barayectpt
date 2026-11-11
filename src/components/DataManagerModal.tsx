@@ -609,6 +609,14 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     setIsFetchingLiara(true);
     setImportStatus('در حال دریافت آخرین نسخه بانک اطلاعاتی از دیتابیس سرور لیارا...');
     try {
+      if (USE_POCKETBASE) {
+        const serverListings = await pocketbaseListings.list();
+        onUpdateListings(serverListings);
+        setImportStatus('بانک اطلاعات PocketBase (' + toPersianDigits(serverListings.length) + ' رکورد) دریافت شد.');
+        setIsSuccess(true);
+        await handleCheckLiara();
+        return;
+      }
       const serverListings = await fetchListingsFromLiara();
       if (serverListings && serverListings.length > 0) {
         const { prunedListings } = pruneOldListings(serverListings);
