@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import JSZip from 'jszip';
+import unzipper from 'unzipper';
 import { Pool, type PoolClient } from 'pg';
 import PocketBase from 'pocketbase';
 import {
@@ -1760,7 +1761,7 @@ interface ChunkUploadSession {
  * with zero base64 RAM overhead, indexing all photos in diskImageSet immediately.
  */
 async function extractZipDirectlyToDisk(
-  zipBuffer: Buffer,
+  zipSource: Buffer | string,
   customBatchName?: string,
   publishedBy = 'مدیر سیستم',
   pocketBaseToken?: string
@@ -1781,17 +1782,17 @@ async function extractZipDirectlyToDisk(
 }> {
   const imagesDir = pocketBaseToken ? path.join(getUploadsDir(), 'pb-import-' + Date.now()) : getImagesDir();
   await fs.promises.mkdir(imagesDir, { recursive: true });
-  const zip = new JSZip();
-  const loadedZip = await zip.loadAsync(zipBuffer);
+  const loadedZip = typeof zipSource === 'string'
+    ? await unzipper.Open.file(zipSource)
+    : await unzipper.Open.buffer(zipSource);
 
   const textMap = new Map<string, string>();
-  const jsonFiles: JSZip.JSZipObject[] = [];
-  const dataEntries: { name: string; baseName: string; idWithoutExt: string; entry: JSZip.JSZipObject }[] = [];
-  const fileNames = Object.keys(loadedZip.files);
+  const jsonFiles: any[] = [];
+  const dataEntries: { name: string; baseName: string; idWithoutExt: string; entry: any }[] = [];
 
-  for (const name of fileNames) {
-    const entry = loadedZip.files[name];
-    if (entry.dir) continue;
+  for (const entry of loadedZip.files) {
+    const name = entry.path;
+    if (entry.type === 'Directory') continue;
     const baseName = name.split('/').pop() || name;
     if (baseName.toLowerCase().endsWith('.json')) {
       jsonFiles.push(entry);
@@ -1803,8 +1804,8 @@ async function extractZipDirectlyToDisk(
 
   // Sort jsonFiles so session.json is processed first
   jsonFiles.sort((a, b) => {
-    const aName = a.name.split('/').pop()?.toLowerCase() || '';
-    const bName = b.name.split('/').pop()?.toLowerCase() || '';
+    const aName = a.path.split('/').pop()?.toLowerCase() || '';
+    const bName = b.path.split('/').pop()?.toLowerCase() || '';
     if (aName === 'session.json') return -1;
     if (bName === 'session.json') return 1;
     return 0;
@@ -1814,10 +1815,10 @@ async function extractZipDirectlyToDisk(
 
   for (const jFile of jsonFiles) {
     try {
-      const fileNameLower = jFile.name.toLowerCase();
+      const fileNameLower = jFile.path.toLowerCase();
       const isDedicatedBuyerFile = /buyer|kharidar|kharid|order|request|moshtari|خریدار|خرید|سفارش|مشتری|درخواست/i.test(fileNameLower);
       const isDedicatedSellerFile = /seller|forush|sale|froosh|فروش|فروشنده/i.test(fileNameLower);
-      const sessionContent = await jFile.async('string');
+      const sessionContent = (await jFile.buffer()).toString('utf-8');
       const parsed = JSON.parse(sessionContent);
 
       if (Array.isArray(parsed)) {
@@ -1860,7 +1861,7 @@ async function extractZipDirectlyToDisk(
       }
     } catch (err) {
       // Do not silently continue with a partial catalogue when a JSON source file is corrupt.
-      throw new Error(`خواندن فایل JSON در آرشیو ناموفق بود: ${jFile.name} — ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`خواندن فایل JSON در آرشیو ناموفق بود: ${jFile.path} — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1887,7 +1888,7 @@ async function extractZipDirectlyToDisk(
   for (const { name, baseName, idWithoutExt, entry } of dataEntries) {
     try {
       const lowerBase = baseName.toLowerCase();
-      const nodeBuffer = await entry.async('nodebuffer');
+      const nodeBuffer = await entry.buffer();
       if (!nodeBuffer || nodeBuffer.length === 0) continue;
 
       const bytes = nodeBuffer;
@@ -2336,11 +2337,10 @@ app.post('/api/admin/upload-chunk/finalize', async (req, res) => {
     // Keep all chunks and the assembled ZIP until the API response confirms
     // both extraction and the PostgreSQL transaction have succeeded.
     // Read stitched zip and extract directly to persistent disk
-    const zipBuffer = await fs.promises.readFile(completeZipPath);
     const targetBatchName = customBatchName || meta.batchName || meta.fileName || `car_session_${Date.now()}.zip`;
     const targetPublishedBy = customPublishedBy || meta.publishedBy || 'مدیر سیستم (آپلود تکه‌ای)';
 
-    const extractResult = await extractZipDirectlyToDisk(zipBuffer, targetBatchName, targetPublishedBy, pocketBaseToken || undefined);
+    const extractResult = await extractZipDirectlyToDisk(completeZipPath, targetBatchName, targetPublishedBy, pocketBaseToken || undefined);
 
     // The PostgreSQL request middleware commits before the response is sent.
     // Retain the upload on any non-2xx response so the admin can safely retry.
