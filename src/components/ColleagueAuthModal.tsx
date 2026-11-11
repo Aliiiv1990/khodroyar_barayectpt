@@ -209,7 +209,7 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
             </div>
             <div>
               <h3 className="font-black text-slate-900 dark:text-white text-base">
-                {isLoggedIn && !showPinEntryWhileLogged ? 'وضعیت حساب کاربری' : 'ورود با رمز دسترسی'}
+                {isLoggedIn && !showPinEntryWhileLogged ? 'وضعیت حساب کاربری' : isPocketBaseEnabled ? 'ورود با حساب کاربری' : 'ورود با رمز دسترسی'}
               </h3>
               <p className="text-[11px] text-slate-400 dark:text-slate-400 font-medium">
                 {isLoggedIn && !showPinEntryWhileLogged
@@ -290,7 +290,7 @@ export const ColleagueAuthModal: React.FC<ColleagueAuthModalProps> = ({
                 className="w-full py-2.5 px-4 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
               >
                 <KeyRound className="w-4 h-4 text-slate-500 dark:text-slate-400" />
-                <span>وارد کردن رمز مدیر</span>
+                <span>{isPocketBaseEnabled ? 'ورود با حساب مدیر' : 'وارد کردن رمز مدیر'}</span>
               </button>
             )}
 
