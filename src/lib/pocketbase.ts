@@ -255,13 +255,13 @@ export const pocketbaseListings = {
     requirePocketBaseAdmin();
     const records = await pocketbase.collection('listings').getFullList({
       filter: pocketbase.filter('import_batch = {:batchName}', { batchName }),
-      fields: 'id,is_active',
+      fields: 'id,is_active,revision',
     });
     let cursor = 0;
     const worker = async () => {
       while (cursor < records.length) {
         const index = cursor++;
-        await pocketbase.collection('listings').update(records[index].id, { is_active: visible });
+        await pocketbase.collection('listings').update(records[index].id, { is_active: visible, revision: Number(records[index].revision || 1) + 1 });
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, records.length) }, () => worker()));
