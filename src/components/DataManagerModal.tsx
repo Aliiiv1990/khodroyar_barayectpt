@@ -592,8 +592,13 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
         }, targetTitle);
         const refreshed = await pocketbaseListings.list();
         onUpdateListings(refreshed);
-        setImportStatus('ثبت در PocketBase کامل شد: ' + toPersianDigits(result.saved) + ' رکورد در بسته «' + targetTitle + '».');
-        setIsSuccess(true);
+        if (result.failed > 0) {
+          setImportStatus('ثبت کامل نشد: ' + toPersianDigits(result.saved) + ' موفق و ' + toPersianDigits(result.failed) + ' ناموفق. جزئیات در سوابق بسته ثبت شده است.');
+          setIsSuccess(false);
+        } else {
+          setImportStatus('ثبت در PocketBase کامل شد: ' + toPersianDigits(result.saved) + ' رکورد در بسته «' + targetTitle + '».');
+          setIsSuccess(true);
+        }
         if (newlyImportedBatch && targetTitle === newlyImportedBatch.batchName) setNewlyImportedBatch(null);
         await handleCheckLiara();
         await loadBatches();
