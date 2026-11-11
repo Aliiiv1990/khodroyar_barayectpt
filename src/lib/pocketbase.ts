@@ -167,9 +167,15 @@ export const pocketbaseListings = {
   },
 
   async update(recordId: string, listing: Partial<CarListing>, files: File[] = []): Promise<CarListing> {
-    const existing = await pocketbase.collection('listings').getFirstListItem(
-      pocketbase.filter('legacy_id = {:legacyId}', { legacyId: recordId }),
-    );
+    let existing: RecordModel;
+    try {
+      existing = await pocketbase.collection('listings').getFirstListItem(
+        pocketbase.filter('legacy_id = {:legacyId}', { legacyId: recordId }),
+      );
+    } catch (error: any) {
+      if (error?.status !== 404) throw error;
+      existing = await pocketbase.collection('listings').getOne(recordId);
+    }
     const currentRevision = Number(existing.revision || 1);
     const requestedRevision = Number(listing.revision || currentRevision);
     if (requestedRevision !== currentRevision) {
@@ -212,9 +218,15 @@ export const pocketbaseListings = {
     return await this.update(String(listing.id), { ...listing, revision: Number(existing.revision || 1) }, files);
   },
   async remove(recordId: string): Promise<void> {
-    const existing = await pocketbase.collection('listings').getFirstListItem(
-      pocketbase.filter('legacy_id = {:legacyId}', { legacyId: recordId }),
-    );
+    let existing: RecordModel;
+    try {
+      existing = await pocketbase.collection('listings').getFirstListItem(
+        pocketbase.filter('legacy_id = {:legacyId}', { legacyId: recordId }),
+      );
+    } catch (error: any) {
+      if (error?.status !== 404) throw error;
+      existing = await pocketbase.collection('listings').getOne(recordId);
+    }
     let contact: RecordModel | null = null;
     try {
       contact = await pocketbase.collection('listing_contacts').getFirstListItem(
