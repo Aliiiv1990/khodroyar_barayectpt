@@ -141,7 +141,7 @@ export default function App() {
   const handleUnlockSuccess = useCallback((role: 'colleague' | 'admin') => {
     setUserRole(role);
     sessionStorage.setItem('car_session_role_v2', role);
-    if (role === 'admin') {
+    if (role === 'admin' && !USE_POCKETBASE) {
       setIsDataManagerOpen(true);
     }
   }, []);
