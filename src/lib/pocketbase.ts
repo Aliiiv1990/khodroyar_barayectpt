@@ -165,6 +165,17 @@ export const pocketbaseListings = {
     return { ...fromPocketBaseRecord(record), phoneNumber: listing.phoneNumber ?? '' };
   },
 
+  async upsert(listing: CarListing, files: File[] = []): Promise<CarListing> {
+    try {
+      const existing = await pocketbase.collection('listings').getFirstListItem(
+        pocketbase.filter('legacy_id = {:legacyId}', { legacyId: listing.id }),
+      );
+      return await this.update(String(listing.id), listing, files);
+    } catch (error: any) {
+      if (error?.status !== 404) throw error;
+      return await this.create(listing, files);
+    }
+  },
   async remove(recordId: string): Promise<void> {
     const existing = await pocketbase.collection('listings').getFirstListItem(
       pocketbase.filter('legacy_id = {:legacyId}', { legacyId: recordId }),
