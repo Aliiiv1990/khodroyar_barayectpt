@@ -23,7 +23,7 @@ import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 interface NewListingModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAddListing: (listing: CarListing) => void;
+  onAddListing: (listing: CarListing) => Promise<void> | void;
   defaultType?: CarListingType;
 }
 
@@ -50,6 +50,8 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
   const [bodyCondition, setBodyCondition] = useState('بدون رنگ');
   const [description, setDescription] = useState('');
   const [feedbackSuccess, setFeedbackSuccess] = useState(false);
+  const [isSavingListing, setIsSavingListing] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
   const recognitionRef = useRef<any>(null);
 
@@ -68,6 +70,7 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
     if (isOpen) {
       setType(defaultType);
       setFeedbackSuccess(false);
+      setSubmitError('');
       setVoiceError('');
       setVoiceTranscript('');
     }
@@ -184,7 +187,7 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
     setIsRecording(false);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!model.trim()) return;
 
@@ -246,12 +249,17 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
     };
 
     newListing._searchIndex = buildSearchIndex(newListing);
-    onAddListing(newListing);
-
-    setFeedbackSuccess(true);
-    setTimeout(() => {
-      onClose();
-    }, 1200);
+    setIsSavingListing(true);
+    setSubmitError('');
+    try {
+      await onAddListing(newListing);
+      setFeedbackSuccess(true);
+      setTimeout(() => onClose(), 1200);
+    } catch {
+      setSubmitError('ثبت آگهی انجام نشد. اتصال اینترنت و ورود به حساب را بررسی کنید.');
+    } finally {
+      setIsSavingListing(false);
+    }
   };
 
   if (!isOpen) return null;
