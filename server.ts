@@ -5,6 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import JSZip from 'jszip';
 import { Pool, type PoolClient } from 'pg';
+import PocketBase from 'pocketbase';
 import {
   parseZipArchive,
   parseSessionJson,
@@ -1599,6 +1600,144 @@ app.post('/api/admin/sync-images', (req, res) => {
 // Zero-RAM Streaming ZIP Extraction & Resumable Chunk Upload Engine
 // -----------------------------------------------------------------------------
 
+const pocketBaseAdminTokenCache = new Map<string, { userId: string; expiresAt: number }>();
+
+async function verifyPocketBaseAdminToken(token: string): Promise<string> {
+  const pocketBaseUrl = String(process.env.POCKETBASE_URL || '').trim();
+  if (!pocketBaseUrl) throw new Error('POCKETBASE_URL روی سرور تنظیم نشده است.');
+  if (!token) throw new Error('برای این عملیات باید با حساب مدیر وارد شده باشید.');
+  const cacheKey = createHash('sha256').update(token).digest('hex');
+  const cached = pocketBaseAdminTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.userId;
+  const pb = new PocketBase(pocketBaseUrl);
+  pb.authStore.save(token, null);
+  let auth: any;
+  try { auth = await pb.collection('users').authRefresh(); }
+  catch { throw new Error('نشست PocketBase معتبر نیست؛ دوباره با حساب مدیر وارد شوید.'); }
+  if (auth.record?.role !== 'admin' || auth.record?.enabled !== true) {
+    throw new Error('آپلود گروهی فقط برای حساب مدیر فعال است.');
+  }
+  const userId = String(auth.record.id);
+  pocketBaseAdminTokenCache.set(cacheKey, { userId, expiresAt: Date.now() + 3 * 60 * 1000 });
+  return userId;
+}
+
+async function importParsedListingsToPocketBase(
+  listings: any[],
+  batchName: string,
+  token: string,
+  imagesDir: string,
+  extractedImagesCount: number,
+): Promise<{ saved: number; failed: number; batchId: string }> {
+  const userId = await verifyPocketBaseAdminToken(token);
+  const pb = new PocketBase(String(process.env.POCKETBASE_URL).trim());
+  pb.authStore.save(token, null);
+  let batch: any;
+  try {
+    const existingBatch = await pb.collection('import_batches').getFirstListItem(
+      pb.filter('batch_name = {:batchName}', { batchName }),
+    );
+    batch = await pb.collection('import_batches').update(existingBatch.id, {
+      status: 'processing', record_count: listings.length, processed_count: 0, error_summary: '', source_file: batchName,
+    });
+  } catch (error: any) {
+    if (error?.status !== 404) throw error;
+    batch = await pb.collection('import_batches').create({
+      batch_name: batchName, status: 'processing', record_count: listings.length, processed_count: 0, error_summary: '', source_file: batchName,
+    });
+  }
+  const errors: string[] = [];
+  let cursor = 0;
+  let processed = 0;
+  let saved = 0;
+  let failed = 0;
+  let lastProgressSave = 0;
+  const fileCandidates = (item: any): string[] => {
+    const safeId = safeImageStorageId(item.id);
+    const names = [safeId + '.jpg'];
+    if (item.imageFileName) names.push(path.basename(String(item.imageFileName).replace(/\\\\/g, '/')));
+    return names;
+  };
+  const makeFields = (item: any): Record<string, string> => ({
+    legacy_id: String(item.id), type: item.type === 'buy_request' ? 'buy_request' : 'sale',
+    title: String(item.title || item.model || 'خودرو'), brand: String(item.brand || ''), model: String(item.model || ''),
+    year: String(Number(item.year || 0)), has_explicit_year: String(Boolean(item.hasExplicitYear)),
+    price: String(Number(item.price || 0)), price_formatted: String(item.priceFormatted || 'توافقی'),
+    mileage: String(Number(item.mileage || 0)), mileage_formatted: String(item.mileageFormatted || 'صفر'),
+    color: String(item.color || 'سفید'), gearbox: String(item.gearbox || 'دنده‌ای'),
+    body_condition: String(item.bodyCondition || 'بدون رنگ'), fuel_type: String(item.fuelType || 'بنزین'),
+    city: String(item.city || ''), description: String(item.description || ''),
+    file_description: String(item.fileDescription || ''), source: item.source === 'user' ? 'user' : 'admin',
+    creator_name: String(item.creatorName || ''), import_batch: batchName, import_date: String(item.importDate || ''),
+    is_text_only: String(Boolean(item.isTextOnly)), is_edited: String(Boolean(item.isEdited)),
+    is_active: 'true', revision: String(Number(item.revision || 1)),
+  });
+  const worker = async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= listings.length) return;
+      const item = listings[index];
+      try {
+        const form = new FormData();
+        Object.entries(makeFields(item)).forEach(([key, value]) => form.append(key, value));
+        let photoPath: string | null = null;
+        for (const candidate of fileCandidates(item)) {
+          const safePath = safeImagePath(imagesDir, candidate);
+          if (safePath && fs.existsSync(safePath)) { photoPath = safePath; break; }
+        }
+        if (photoPath) {
+          const stat = await fs.promises.stat(photoPath);
+          if (stat.size > 12 * 1024 * 1024) throw new Error('حجم عکس از سقف ۱۲ مگابایت بیشتر است.');
+          const buffer = await fs.promises.readFile(photoPath);
+          const isPng = buffer.length > 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
+          const isWebp = buffer.length > 12 && buffer.toString('ascii', 8, 12) === 'WEBP';
+          const isGif = buffer.length > 3 && buffer.toString('ascii', 0, 3) === 'GIF';
+          const mime = isPng ? 'image/png' : isWebp ? 'image/webp' : isGif ? 'image/gif' : 'image/jpeg';
+          const extension = isPng ? 'png' : isWebp ? 'webp' : isGif ? 'gif' : 'jpg';
+          form.append('photos', new Blob([new Uint8Array(buffer)], { type: mime }), safeImageStorageId(item.id) + '.' + extension);
+        }
+        let existing: any = null;
+        try { existing = await pb.collection('listings').getFirstListItem(pb.filter('legacy_id = {:legacyId}', { legacyId: String(item.id) })); }
+        catch (error: any) { if (error?.status !== 404) throw error; }
+        let record: any;
+        if (existing) {
+          record = await pb.collection('listings').update(existing.id, form);
+        } else {
+          form.append('created_by', userId);
+          record = await pb.collection('listings').create(form);
+        }
+        const phone = String(item.phoneNumber || '').trim();
+        if (phone) {
+          try {
+            const contact = await pb.collection('listing_contacts').getFirstListItem(pb.filter('listing_id = {:listingId}', { listingId: String(item.id) }));
+            await pb.collection('listing_contacts').update(contact.id, { phone_number: phone, owner_id: userId });
+          } catch (error: any) {
+            if (error?.status !== 404) throw error;
+            await pb.collection('listing_contacts').create({ listing_id: String(item.id), phone_number: phone, owner_id: userId });
+          }
+        }
+        saved += 1;
+      } catch (error: any) {
+        failed += 1;
+        errors.push('رکورد ' + (index + 1) + ' (' + String(item.id) + '): ' + String(error?.message || error).slice(0, 180));
+      }
+      processed += 1;
+      if (processed - lastProgressSave >= 20 || processed === listings.length) {
+        lastProgressSave = processed;
+        await pb.collection('import_batches').update(batch.id, {
+          processed_count: processed, error_summary: errors.slice(0, 20).join('\\n').slice(0, 4500),
+        });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(2, listings.length) }, () => worker()));
+  await pb.collection('import_batches').update(batch.id, {
+    status: failed === 0 ? 'completed' : 'failed', record_count: listings.length, processed_count: processed,
+    error_summary: errors.slice(0, 20).join('\\n').slice(0, 4500),
+  });
+  if (failed > 0) throw new Error('بخشی از اطلاعات ثبت نشد (' + failed + ' مورد). اجرای دوباره همین ZIP امن است و رکورد تکراری ایجاد نمی‌کند. ' + errors.slice(0, 3).join(' | '));
+  return { saved, failed, batchId: String(batch.id) };
+}
 interface ChunkUploadSession {
   uploadId: string;
   fileName: string;
