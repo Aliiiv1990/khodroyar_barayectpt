@@ -1803,6 +1803,7 @@ async function extractZipDirectlyToDisk(
 }> {
   const imagesDir = pocketBaseToken ? path.join(getUploadsDir(), 'pb-import-' + Date.now()) : getImagesDir();
   await fs.promises.mkdir(imagesDir, { recursive: true });
+  try {
   const loadedZip = typeof zipSource === 'string'
     ? await unzipperOpen.file(zipSource)
     : await unzipperOpen.buffer(zipSource);
@@ -2133,6 +2134,9 @@ async function extractZipDirectlyToDisk(
     revision: memoryDb.revision,
     lastUpdated: memoryDb.lastUpdated,
   };
+  } finally {
+    if (pocketBaseToken) await fs.promises.rm(imagesDir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 // -----------------------------------------------------------------------------
