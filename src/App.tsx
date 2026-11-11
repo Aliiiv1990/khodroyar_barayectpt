@@ -764,6 +764,10 @@ export default function App() {
   }, []);
 
   const handleRegenerateDemo = useCallback(async () => {
+    if (USE_POCKETBASE) {
+      window.alert('ساخت داده آزمایشی محلی در حالت PocketBase غیرفعال است تا اطلاعات مشترک دست‌کاری نشوند.');
+      return;
+    }
     const raw = generateRealisticCarListings(5000);
     const { prunedListings } = pruneOldListings(raw);
     setStorageExplicitlyCleared(false);
