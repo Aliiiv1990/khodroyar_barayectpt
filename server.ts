@@ -1684,6 +1684,7 @@ async function importParsedListingsToPocketBase(
   const fileCandidates = (item: any): string[] => {
     const safeId = safeImageStorageId(item.id);
     const names = [safeId + '.jpg'];
+    if (item.mediaId) names.push(safeImageStorageId(item.mediaId) + '.jpg');
     if (item.imageFileName) names.push(path.basename(String(item.imageFileName).replace(/\\/g, '/')));
     return names;
   };
