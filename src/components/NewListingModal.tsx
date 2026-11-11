@@ -50,6 +50,7 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
   const [bodyCondition, setBodyCondition] = useState('بدون رنگ');
   const [description, setDescription] = useState('');
   const [feedbackSuccess, setFeedbackSuccess] = useState(false);
+  const [draftId, setDraftId] = useState(() => 'manual-' + Date.now());
   const [isSavingListing, setIsSavingListing] = useState(false);
   const [submitError, setSubmitError] = useState('');
 
@@ -70,6 +71,7 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
     if (isOpen) {
       setType(defaultType);
       setFeedbackSuccess(false);
+      setDraftId('manual-' + Date.now());
       setSubmitError('');
       setVoiceError('');
       setVoiceTranscript('');
@@ -220,7 +222,7 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
         : `${model} به رنگ ${color}`;
 
     const newListing: CarListing = {
-      id: `manual-${Date.now()}`,
+      id: draftId,
       type,
       title: fullTitle,
       brand,
