@@ -10,6 +10,12 @@ if (!configuredUrl && import.meta.env.PROD) {
 export const pocketbase = new PocketBase(configuredUrl || 'http://127.0.0.1:8090');
 pocketbase.autoCancellation(false);
 
+function requirePocketBaseAdmin(): void {
+  if (!pocketbase.authStore.isValid || pocketbase.authStore.record?.role !== 'admin') {
+    throw new Error('این عملیات فقط برای مدیر سامانه مجاز است.');
+  }
+}
+
 export type PocketBaseListingEvent = {
   action: 'create' | 'update' | 'delete';
   record: CarListing | null;
@@ -191,7 +197,8 @@ export const pocketbaseListings = {
     await pocketbase.collection('listings').delete(existing.id);
   },
 
-  async listBatches(): Promise<Array<{ id: string; batchName: string; date: string; count: number; saleCount: number; buyCount: number; isVisible: boolean }>> {
+  async listBatches(): Promise<Array<{
+    requirePocketBaseAdmin(); id: string; batchName: string; date: string; count: number; saleCount: number; buyCount: number; isVisible: boolean }>> {
     const [records, batches] = await Promise.all([
       pocketbase.collection('listings').getFullList({ fields: 'legacy_id,import_batch,type,is_active,created' }),
       pocketbase.collection('import_batches').getFullList({ sort: '-created' }),
@@ -220,6 +227,7 @@ export const pocketbaseListings = {
   },
 
   async setBatchVisibility(batchName: string, visible: boolean): Promise<void> {
+    requirePocketBaseAdmin();
     const records = await pocketbase.collection('listings').getFullList({
       filter: pocketbase.filter('import_batch = {:batchName}', { batchName }),
       fields: 'id,is_active',
@@ -235,6 +243,7 @@ export const pocketbaseListings = {
   },
 
   async deleteBatch(batchName: string): Promise<number> {
+    requirePocketBaseAdmin();
     const records = await pocketbase.collection('listings').getFullList({
       filter: pocketbase.filter('import_batch = {:batchName}', { batchName }),
       fields: 'id,legacy_id',
@@ -257,6 +266,7 @@ export const pocketbaseListings = {
   },
 
   async clearAll(): Promise<number> {
+    requirePocketBaseAdmin();
     const records = await pocketbase.collection('listings').getFullList({ fields: 'id,legacy_id' });
     let cursor = 0;
     const worker = async () => {
