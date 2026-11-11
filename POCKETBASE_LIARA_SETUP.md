@@ -17,10 +17,10 @@ This branch is a migration workspace. It does not change the live Liara app.
 6. Never put a PocketBase superuser email/password or API key into a `VITE_*` variable or commit it to Git.
 
 ## Current code status
-- PocketBase SDK dependency and typed listing adapter are being introduced.
-- The current React screens are intentionally retained.
-- The adapter is not yet wired into the app's active data flow or login screen.
-- Do not deploy this branch to the live app until migration phases and staging tests are complete.
+- The PocketBase SDK, typed listing adapter, native account login, listing CRUD, private contact storage, and realtime listing updates are wired behind `VITE_POCKETBASE_URL`.
+- The admin data manager routes batch visibility, deletion, integrity checks, and ZIP imports to PocketBase when that setting is present.
+- ZIP import uses the Node service as an authenticated streaming extraction worker; listing records and photos are stored in PocketBase.
+- The UI and Liara integration have not yet passed a complete CI run or a real staging import. Do not switch the live app until CI, authentication, realtime, backup/restore, and a representative ZIP import have been verified.
 
 
 ## ZIP import and disk sizing
