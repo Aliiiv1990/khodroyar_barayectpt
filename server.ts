@@ -1807,6 +1807,16 @@ async function extractZipDirectlyToDisk(
   const loadedZip = typeof zipSource === 'string'
     ? await unzipperOpen.file(zipSource)
     : await unzipperOpen.buffer(zipSource);
+  if (pocketBaseToken && fs.existsSync('/data')) {
+    const uncompressedBytes = loadedZip.files.reduce((sum: number, file: any) => sum + Number(file.uncompressedSize || 0), 0);
+    const disk = await fs.promises.statfs('/data');
+    const freeBytes = Number(disk.bavail) * Number(disk.bsize);
+    if (uncompressedBytes > freeBytes * 0.85) {
+      const requiredGb = (uncompressedBytes / (1024 ** 3)).toFixed(2);
+      const freeGb = (freeBytes / (1024 ** 3)).toFixed(2);
+      throw new Error('فضای خالی دیسک موقت برای استخراج ZIP کافی نیست. حجم بازشده حدود ' + requiredGb + ' گیگابایت و فضای خالی ' + freeGb + ' گیگابایت است. ابتدا دیسک برنامه Node را افزایش دهید.');
+    }
+  }
 
   const textMap = new Map<string, string>();
   const jsonFiles: any[] = [];
