@@ -6,9 +6,10 @@ migrate((app) => {
     name: "users",
     type: "auth",
     listRule: '@request.auth.role = "admin"',
-    viewRule: '@request.auth.id != ""',
+    viewRule: '@request.auth.id = id || @request.auth.role = "admin"',
+    authRule: "enabled = true",
     createRule: '@request.auth.role = "admin"',
-    updateRule: '@request.auth.id = id || @request.auth.role = "admin"',
+    updateRule: '(@request.auth.id = id && @request.body.role = role && @request.body.enabled = enabled) || @request.auth.role = "admin"',
     deleteRule: '@request.auth.role = "admin"',
     fields: [
       { name: "role", type: "select", required: true, maxSelect: 1, values: ["admin", "colleague"] },
@@ -74,11 +75,12 @@ migrate((app) => {
     listRule: '@request.auth.id != ""',
     viewRule: '@request.auth.id != ""',
     createRule: '@request.auth.id != ""',
-    updateRule: '@request.auth.role = "admin" || @request.auth.id != ""',
+    updateRule: '@request.auth.role = "admin" || owner_id = @request.auth.id',
     deleteRule: '@request.auth.role = "admin"',
     fields: [
       { name: "listing_id", type: "text", required: true, max: 160 },
       { name: "phone_number", type: "text", max: 40 },
+      { name: "owner_id", type: "text", required: true, max: 64 },
     ],
     indexes: ["CREATE UNIQUE INDEX idx_listing_contacts_listing_id ON listing_contacts (listing_id)"],
   });
