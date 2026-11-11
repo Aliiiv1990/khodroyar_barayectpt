@@ -46,6 +46,7 @@ migrate((app) => {
       { name: "fuel_type", type: "text", max: 80 },
       { name: "city", type: "text", max: 120 },
       { name: "description", type: "text", max: 5000 },
+      { name: "file_description", type: "text", max: 1000 },
       { name: "source", type: "select", maxSelect: 1, values: ["admin", "user"] },
       { name: "creator_name", type: "text", max: 120 },
       { name: "import_batch", type: "text", max: 200 },
