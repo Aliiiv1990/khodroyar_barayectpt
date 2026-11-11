@@ -1,6 +1,7 @@
 import PocketBase, { type RecordModel } from 'pocketbase';
 import type { CarListing, CarListingType } from '../types/car';
 import { sanitizeAndIndexListing } from '../utils/sessionDataParser';
+import { optimizeImageForUpload } from '../utils/imageHelper';
 
 const configuredUrl = import.meta.env.VITE_POCKETBASE_URL?.trim();
 if (!configuredUrl && import.meta.env.PROD) {
@@ -24,6 +25,23 @@ async function writePocketBaseAudit(action: string, recordId: string, summary: s
   } catch (error) {
     console.warn('[PocketBase] Could not write audit entry:', error);
   }
+}
+
+async function filesFromListing(listing: Partial<CarListing>): Promise<File[]> {
+  if (typeof File === 'undefined') return [];
+  const source = [listing.imageFullBase64, listing.imageThumbnailBase64].find(
+    (value): value is string => Boolean(value && value.startsWith('data:image/') && !value.startsWith('data:image/svg+xml')),
+  );
+  if (!source) return [];
+  const optimized = await optimizeImageForUpload(source, 1600, 1200, 0.84);
+  const match = optimized.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
+  if (!match) return [];
+  const mime = match[1].toLowerCase();
+  const extension = mime.split('/')[1].replace('jpeg', 'jpg');
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return [new File([bytes], 'listing-' + String(listing.id || 'photo') + '.' + extension, { type: mime })];
 }
 
 function requirePocketBaseAdmin(): void {
@@ -173,7 +191,8 @@ export const pocketbaseListings = {
     }
   },
   async create(listing: CarListing, files: File[] = []): Promise<CarListing> {
-    const payload = toFormData(listing, files);
+    const uploadFiles = files.length ? files : await filesFromListing(listing);
+    const payload = toFormData(listing, uploadFiles);
     const record = await pocketbase.collection('listings').create(payload);
     if (listing.phoneNumber && pocketbase.authStore.isValid) {
       await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.record?.id || '') });
@@ -186,6 +205,7 @@ export const pocketbaseListings = {
   },
 
   async update(recordId: string, listing: Partial<CarListing>, files: File[] = []): Promise<CarListing> {
+    const uploadFiles = files.length ? files : await filesFromListing(listing);
     let existing: RecordModel;
     try {
       existing = await pocketbase.collection('listings').getFirstListItem(
@@ -202,7 +222,7 @@ export const pocketbaseListings = {
     }
     const record = await pocketbase.collection('listings').update(
       existing.id,
-      toFormData({ ...listing, _createdById: String(existing.created_by || ''), revision: currentRevision + 1 }, files),
+      toFormData({ ...listing, _createdById: String(existing.created_by || ''), revision: currentRevision + 1 }, uploadFiles),
     );
     let finalRecord = record;
     if (listing.phoneNumber !== undefined && pocketbase.authStore.isValid) {
