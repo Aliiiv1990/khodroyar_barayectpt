@@ -17,7 +17,6 @@ migrate((app) => {
       { name: "enabled", type: "bool" },
     ],
     passwordAuth: { enabled: true, identityFields: ["email"] },
-    indexes: ["CREATE UNIQUE INDEX idx_users_email ON users (email)"],
   });
   app.save(users);
 
