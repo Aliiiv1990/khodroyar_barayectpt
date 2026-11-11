@@ -720,6 +720,10 @@ export default function App() {
 
   const handleUpdateListings = useCallback((newListings: CarListing[]) => {
     setListings(newListings);
+    if (USE_POCKETBASE) {
+      setStorageExplicitlyCleared(newListings.length === 0);
+      return;
+    }
     if (newListings.length === 0) {
       clearIndexedDBListings();
       setStorageExplicitlyCleared(true);
@@ -734,6 +738,7 @@ export default function App() {
     if (!incomingListings || incomingListings.length === 0) return;
     setStorageExplicitlyCleared(false);
     setListings((prev) => {
+      if (USE_POCKETBASE) return [...incomingListings, ...prev.filter((item) => !incomingListings.some((incoming) => incoming.id === item.id))];
       const incomingIds = new Set(incomingListings.map((l) => l.id));
       const preserved = prev.filter((p) => !incomingIds.has(p.id));
       const merged = [...incomingListings, ...preserved];
