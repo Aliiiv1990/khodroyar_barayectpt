@@ -200,15 +200,16 @@ export const pocketbaseListings = {
   },
 
   async upsert(listing: CarListing, files: File[] = []): Promise<CarListing> {
+    let existing: RecordModel;
     try {
-      const existing = await pocketbase.collection('listings').getFirstListItem(
+      existing = await pocketbase.collection('listings').getFirstListItem(
         pocketbase.filter('legacy_id = {:legacyId}', { legacyId: listing.id }),
       );
-      return await this.update(String(listing.id), { ...listing, revision: Number(existing.revision || 1) }, files);
     } catch (error: any) {
       if (error?.status !== 404) throw error;
       return await this.create(listing, files);
     }
+    return await this.update(String(listing.id), { ...listing, revision: Number(existing.revision || 1) }, files);
   },
   async remove(recordId: string): Promise<void> {
     const existing = await pocketbase.collection('listings').getFirstListItem(
@@ -290,7 +291,9 @@ export const pocketbaseListings = {
         pocketbase.filter('batch_name = {:batchName}', { batchName }),
       );
       await pocketbase.collection('import_batches').delete(batch.id);
-    } catch { /* The import batch record may not exist for manually created listings. */ }
+    } catch (error: any) {
+      if (error?.status !== 404) throw error;
+    }
     return records.length;
   },
 
