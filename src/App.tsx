@@ -982,7 +982,7 @@ export default function App() {
           onOpenDetails={handleOpenDetails}
           onRequestUnlock={() => setIsAuthModalOpen(true)}
           onResetFilters={handleResetFilters}
-          onOpenDataManager={() => setIsDataManagerOpen(true)}
+          onOpenDataManager={USE_POCKETBASE ? undefined : () => setIsDataManagerOpen(true)}
           onRegenerateDemo={handleRegenerateDemo}
           onOpenNewListing={() => setIsNewListingOpen(true)}
           activeType={filters.type}
