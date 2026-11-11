@@ -200,7 +200,7 @@ export const pocketbaseListings = {
   },
   async create(listing: CarListing, files: File[] = []): Promise<CarListing> {
     const uploadFiles = files.length ? files : await filesFromListing(listing);
-    const payload = toFormData(listing, uploadFiles);
+    const payload = toFormData({ ...listing, _createdById: String(pocketbase.authStore.record?.id || '') }, uploadFiles);
     const record = await pocketbase.collection('listings').create(payload);
     if (listing.phoneNumber && pocketbase.authStore.isValid) {
       await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.record?.id || '') });
