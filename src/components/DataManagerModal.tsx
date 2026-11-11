@@ -240,7 +240,7 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
   const handleDirectZipUpload = async (file: File) => {
     setIsUploadingZipDirect(true);
     setZipDirectProgress(0);
-    setImportStatus(`در حال آپلود و ذخیره فایل ${file.name} در دیسک دائمی لیارا...`);
+    setImportStatus(USE_POCKETBASE ? `در حال آپلود و ثبت فایل ${file.name} در PocketBase...` : `در حال آپلود و ذخیره فایل ${file.name} در دیسک دائمی لیارا...`);
     setIsSuccess(false);
 
     try {
@@ -543,7 +543,7 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     setIsPublishingLiara(true);
     setPublishingBatchName(targetTitle);
     setPublishProgress(0);
-    setImportStatus(`در حال ارسال «${targetTitle}» (${toPersianDigits(targetListings.length)} خودرو) به سرور لیارا (بدون حذف فایل‌های قبلی)...`);
+    setImportStatus(USE_POCKETBASE ? `در حال ثبت «${targetTitle}» (${toPersianDigits(targetListings.length)} خودرو) در PocketBase...` : `در حال ارسال «${targetTitle}» (${toPersianDigits(targetListings.length)} خودرو) به سرور لیارا (بدون حذف فایل‌های قبلی)...`);
     if (typeof window !== 'undefined') {
       (window as any).__isSyncingToLiara = true;
     }
