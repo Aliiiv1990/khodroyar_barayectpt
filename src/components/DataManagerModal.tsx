@@ -296,20 +296,22 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
   const loadBatches = async () => {
     setIsLoadingBatches(true);
     try {
-      const serverBatches = await fetchLiaraBatches();
-      setBatches(serverBatches);
-      const serverHidden = new Set<string>();
-      for (const b of serverBatches) {
-        if (b.isVisible === false) {
-          serverHidden.add(b.batchName);
-        }
-      }
-      setHiddenBatches(serverHidden);
-      if (typeof window !== 'undefined') {
+      if (USE_POCKETBASE) {
+        const serverBatches = await pocketbaseListings.listBatches();
+        setBatches(serverBatches as LiaraBatchInfo[]);
+        const serverHidden = new Set<string>(serverBatches.filter((batch) => !batch.isVisible).map((batch) => batch.batchName));
+        setHiddenBatches(serverHidden);
         localStorage.setItem('car_hidden_batches', JSON.stringify(Array.from(serverHidden)));
+      } else {
+        const serverBatches = await fetchLiaraBatches();
+        setBatches(serverBatches);
+        const serverHidden = new Set<string>();
+        for (const b of serverBatches) if (b.isVisible === false) serverHidden.add(b.batchName);
+        setHiddenBatches(serverHidden);
+        if (typeof window !== 'undefined') localStorage.setItem('car_hidden_batches', JSON.stringify(Array.from(serverHidden)));
       }
     } catch {
-      // ignore
+      // Ignore transient backend errors; the listing view remains usable.
     } finally {
       setIsLoadingBatches(false);
     }
