@@ -7,7 +7,7 @@ ARG POCKETBASE_VERSION
 ENV CGO_ENABLED=0
 RUN go install "ganigeorgiev.com/pocketbase/pocketbase/examples/base@v${POCKETBASE_VERSION}"
 
-FROM alpine:3.21
+FROM alpine:3.23
 RUN apk add --no-cache ca-certificates
 WORKDIR /pb
 COPY --from=pocketbase-build /go/bin/base /pb/pocketbase
