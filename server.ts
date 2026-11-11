@@ -1722,8 +1722,11 @@ async function importParsedListingsToPocketBase(
           const isPng = buffer.length > 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
           const isWebp = buffer.length > 12 && buffer.toString('ascii', 8, 12) === 'WEBP';
           const isGif = buffer.length > 3 && buffer.toString('ascii', 0, 3) === 'GIF';
-          const mime = isPng ? 'image/png' : isWebp ? 'image/webp' : isGif ? 'image/gif' : 'image/jpeg';
-          const extension = isPng ? 'png' : isWebp ? 'webp' : isGif ? 'gif' : 'jpg';
+          const isAvif = buffer.length > 12 && buffer.toString('ascii', 4, 12).includes('ftypavif');
+          const isJpeg = buffer.length > 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+          if (!isPng && !isWebp && !isGif && !isAvif && !isJpeg) throw new Error('قالب عکس پشتیبانی نمی‌شود.');
+          const mime = isPng ? 'image/png' : isWebp ? 'image/webp' : isGif ? 'image/gif' : isAvif ? 'image/avif' : 'image/jpeg';
+          const extension = isPng ? 'png' : isWebp ? 'webp' : isGif ? 'gif' : isAvif ? 'avif' : 'jpg';
           form.append('photos', new Blob([new Uint8Array(buffer)], { type: mime }), safeImageStorageId(item.id) + '.' + extension);
         }
         let existing: any = null;
