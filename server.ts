@@ -2105,8 +2105,9 @@ async function extractZipDirectlyToDisk(
 // -----------------------------------------------------------------------------
 
 // 1. POST /api/admin/upload-chunk/init: Initializes a chunked upload session or checks resume state
-app.post('/api/admin/upload-chunk/init', (req, res) => {
+app.post('/api/admin/upload-chunk/init', async (req, res) => {
   try {
+    if (process.env.POCKETBASE_URL) await verifyPocketBaseAdminToken(String(req.headers.authorization || '').replace(/^Bearer\\s+/i, '').trim());
     const { uploadId, fileName, fileSize, totalChunks, batchName, publishedBy } = req.body || {};
     const parsedTotalChunks = Number(totalChunks);
     const parsedFileSize = Number(fileSize);
@@ -2167,6 +2168,7 @@ app.post(
   express.raw({ type: () => true, limit: '10mb' }),
   async (req, res) => {
     try {
+      if (process.env.POCKETBASE_URL) await verifyPocketBaseAdminToken(String(req.headers.authorization || '').replace(/^Bearer\\s+/i, '').trim());
       const uploadId = String(req.query.uploadId || '').trim();
       const chunkIndex = Number.parseInt(String(req.query.chunkIndex || '-1'), 10);
       const declaredTotalChunks = Number.parseInt(String(req.query.totalChunks || '-1'), 10);
@@ -2259,6 +2261,8 @@ app.get('/api/admin/upload-chunk/status/:uploadId', (req, res) => {
 // 4. POST /api/admin/upload-chunk/finalize: Stitches chunks via file stream, extracts to disk, and updates catalog
 app.post('/api/admin/upload-chunk/finalize', async (req, res) => {
   try {
+    const pocketBaseToken = String(req.headers.authorization || '').replace(/^Bearer\\s+/i, '').trim();
+    if (process.env.POCKETBASE_URL) await verifyPocketBaseAdminToken(pocketBaseToken);
     const { uploadId, batchName: customBatchName, publishedBy: customPublishedBy } = req.body;
     if (!uploadId) {
       return res.status(400).json({ success: false, error: 'شناسه آپلود ارسال نشده است.' });
@@ -2325,7 +2329,7 @@ app.post('/api/admin/upload-chunk/finalize', async (req, res) => {
     const targetBatchName = customBatchName || meta.batchName || meta.fileName || `car_session_${Date.now()}.zip`;
     const targetPublishedBy = customPublishedBy || meta.publishedBy || 'مدیر سیستم (آپلود تکه‌ای)';
 
-    const extractResult = await extractZipDirectlyToDisk(zipBuffer, targetBatchName, targetPublishedBy);
+    const extractResult = await extractZipDirectlyToDisk(zipBuffer, targetBatchName, targetPublishedBy, pocketBaseToken || undefined);
 
     // The PostgreSQL request middleware commits before the response is sent.
     // Retain the upload on any non-2xx response so the admin can safely retry.
@@ -2350,6 +2354,8 @@ app.post(
   express.raw({ type: () => true, limit: '300mb' }),
   async (req, res) => {
     try {
+      const pocketBaseToken = String(req.headers.authorization || '').replace(/^Bearer\\s+/i, '').trim();
+      if (process.env.POCKETBASE_URL) await verifyPocketBaseAdminToken(pocketBaseToken);
       const rawBuffer = req.body;
       if (!rawBuffer || !(rawBuffer instanceof Buffer) || rawBuffer.length < 50) {
         return res.status(400).json({ success: false, error: 'فایل زیپ ارسالی نامعتبر یا خالی است.' });
@@ -2360,7 +2366,7 @@ app.post(
         `car_session_${new Date().toLocaleDateString('fa-IR').replace(/\//g, '_')}.zip`;
       const publishedBy = (req.query.publishedBy as string) || 'مدیر سیستم (آپلود مستقیم زیپ)';
 
-      const extractResult = await extractZipDirectlyToDisk(rawBuffer, customBatchName, publishedBy);
+      const extractResult = await extractZipDirectlyToDisk(rawBuffer, customBatchName, publishedBy, pocketBaseToken || undefined);
       res.json(extractResult);
     } catch (err: any) {
       console.error('Error in upload-zip:', err);
