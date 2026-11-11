@@ -786,6 +786,11 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
   // Export full backup with images for Telegram, Bale, Eitaa, etc. (No VPN needed)
   const handleExportFullBackup = () => {
+    if (USE_POCKETBASE) {
+      setImportStatus('پشتیبان کامل PocketBase باید از پنل مدیر PocketBase و بخش Settings → Backups ساخته شود تا دیتابیس و فایل‌های عکس با هم ذخیره شوند. خروجی JSON این صفحه جایگزین پشتیبان کامل نیست.');
+      setIsSuccess(false);
+      return;
+    }
     if (listings.length === 0) {
       setImportStatus('ابتدا باید داده‌ای در برنامه وجود داشته باشد تا فایل پشتیبان ساخته شود.');
       setIsSuccess(false);
