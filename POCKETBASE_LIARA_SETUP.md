@@ -36,3 +36,12 @@ This branch is a migration workspace. It does not change the live Liara app.
 - This branch pins the PocketBase server to 0.42.1 and the official JavaScript SDK to 0.28.1. Keep these versions compatible and update them together only after staging tests.
 - PocketBase is still pre-1.0. Its official documentation warns that backward compatibility is not guaranteed and that production-critical deployments need changelog review and occasional manual migration work. Maintain off-service backups and test restores before every upgrade.
 - The upstream project moved development away from its archived GitHub repository to the maintainer's host; it has not been abandoned. Follow the official documentation/changelog for security and release updates.
+
+
+## Backup and restore acceptance procedure
+1. In the PocketBase superuser dashboard, open **Settings → Backups**.
+2. Configure scheduled backups and a retention limit. Prefer an S3-compatible off-site destination if available; a backup stored only on the same persistent disk does not protect against disk or account loss.
+3. Before every PocketBase server upgrade, create a fresh backup and verify that it can be downloaded.
+4. For a restore test, create a separate staging PocketBase service running the exact same PocketBase version. Restore the backup there, including both the SQLite database and the `pb_data/storage` files.
+5. Verify record counts, a sample of photo URLs, login for an admin and colleague, and realtime updates before considering the backup valid.
+6. Never replace or delete the live `pb_data` volume as part of a normal application deploy.
