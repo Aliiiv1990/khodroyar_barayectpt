@@ -24,7 +24,6 @@ function fileUrl(record: RecordModel, fileName: string, thumb = false): string {
 export function fromPocketBaseRecord(record: RecordModel): CarListing {
   const photos = Array.isArray(record.photos) ? record.photos as string[] : [];
   const imageUrl = photos[0] ? fileUrl(record, photos[0]) : '';
-  const thumbnailUrl = photos[0] ? fileUrl(record, photos[0], true) : '';
   return sanitizeAndIndexListing({
     id: String(record.legacy_id || record.id),
     type: (record.type === 'buy_request' ? 'buy_request' : 'sale') as CarListingType,
@@ -42,7 +41,7 @@ export function fromPocketBaseRecord(record: RecordModel): CarListing {
     bodyCondition: String(record.body_condition || 'بدون رنگ'),
     fuelType: (record.fuel_type || 'بنزین') as CarListing['fuelType'],
     city: String(record.city || ''),
-    phoneNumber: String(record.phone_number || ''),
+    phoneNumber: '', // Private contact data is loaded separately for authenticated users.
     description: String(record.description || ''),
     createdAt: String(record.created || new Date().toISOString()),
     imageThumbnailBase64: '',
@@ -60,7 +59,6 @@ export function fromPocketBaseRecord(record: RecordModel): CarListing {
     revision: Number(record.revision || 1),
     status: record.is_active === false ? 'inactive' : 'active',
     _searchIndex: [record.title, record.brand, record.model, record.city, record.phone_number].filter(Boolean).join(' ').toLocaleLowerCase(),
-    ...(thumbnailUrl ? { imageThumbnailBase64: thumbnailUrl } : {}),
   });
 }
 
@@ -83,7 +81,6 @@ function toFormData(listing: Partial<CarListing>, files: File[] = []): FormData 
     body_condition: String(listing.bodyCondition || 'بدون رنگ'),
     fuel_type: String(listing.fuelType || 'بنزین'),
     city: String(listing.city || ''),
-    phone_number: String(listing.phoneNumber || ''),
     description: String(listing.description || ''),
     source: listing.source || 'user',
     creator_name: String(listing.creatorName || ''),
@@ -93,6 +90,7 @@ function toFormData(listing: Partial<CarListing>, files: File[] = []): FormData 
     is_edited: String(Boolean(listing.isEdited)),
     is_active: 'true',
     revision: String(Number(listing.revision || 1)),
+    created_by: String(pocketbase.authStore.model?.id || ''),
   };
   Object.entries(values).forEach(([key, value]) => form.append(key, value));
   files.forEach((file) => form.append('photos', file, file.name));
@@ -119,11 +117,24 @@ export const pocketbaseListings = {
       });
       records.push(...result.items);
     }
-    return records.map(fromPocketBaseRecord);
+    const mapped = records.map(fromPocketBaseRecord);
+    if (pocketbase.authStore.isValid && mapped.length) {
+      try {
+        const contacts = await pocketbase.collection('listing_contacts').getFullList({ fields: 'listing_id,phone_number' });
+        const phones = new Map(contacts.map((contact) => [String(contact.listing_id), String(contact.phone_number || '')]));
+        return mapped.map((listing) => ({ ...listing, phoneNumber: phones.get(listing.id) || '' }));
+      } catch (error) {
+        console.warn('[PocketBase] Private contact records are not available:', error);
+      }
+    }
+    return mapped;
   },
 
   async create(listing: CarListing, files: File[] = []): Promise<CarListing> {
     const record = await pocketbase.collection('listings').create(toFormData(listing, files));
+    if (listing.phoneNumber && pocketbase.authStore.isValid) {
+      await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber });
+    }
     return fromPocketBaseRecord(record);
   },
 
@@ -132,6 +143,18 @@ export const pocketbaseListings = {
       pocketbase.filter('legacy_id = {:legacyId}', { legacyId: recordId }),
     );
     const record = await pocketbase.collection('listings').update(existing.id, toFormData(listing, files));
+    if (listing.phoneNumber !== undefined && pocketbase.authStore.isValid) {
+      try {
+        const contact = await pocketbase.collection('listing_contacts').getFirstListItem(
+          pocketbase.filter('listing_id = {:listingId}', { listingId: recordId }),
+        );
+        await pocketbase.collection('listing_contacts').update(contact.id, { phone_number: listing.phoneNumber });
+      } catch {
+        if (listing.phoneNumber) {
+          await pocketbase.collection('listing_contacts').create({ listing_id: recordId, phone_number: listing.phoneNumber });
+        }
+      }
+    }
     return fromPocketBaseRecord(record);
   },
 
