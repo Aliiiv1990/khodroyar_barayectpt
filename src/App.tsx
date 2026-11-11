@@ -141,7 +141,7 @@ export default function App() {
   const handleUnlockSuccess = useCallback((role: 'colleague' | 'admin') => {
     setUserRole(role);
     sessionStorage.setItem('car_session_role_v2', role);
-    if (role === 'admin' && !USE_POCKETBASE) {
+    if (role === 'admin') {
       setIsDataManagerOpen(true);
     }
   }, []);
@@ -987,7 +987,7 @@ export default function App() {
           onOpenDetails={handleOpenDetails}
           onRequestUnlock={() => setIsAuthModalOpen(true)}
           onResetFilters={handleResetFilters}
-          onOpenDataManager={USE_POCKETBASE ? undefined : () => setIsDataManagerOpen(true)}
+          onOpenDataManager={() => setIsDataManagerOpen(true)}
           onRegenerateDemo={handleRegenerateDemo}
           onOpenNewListing={() => setIsNewListingOpen(true)}
           activeType={filters.type}
