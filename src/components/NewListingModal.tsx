@@ -337,6 +337,12 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
             </div>
           )}
 
+          {submitError && (
+            <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/60 text-red-700 dark:text-red-300 p-3 rounded-xl text-xs font-bold text-center">
+              {submitError}
+            </div>
+          )}
+
           {/* Voice Tab Active Content */}
           {activeTab === 'voice' && (
             <div className="space-y-3">
@@ -540,11 +546,11 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={!model.trim()}
+              disabled={!model.trim() || isSavingListing}
               className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 text-white rounded-2xl font-black text-sm sm:text-base shadow-md transition-transform active:scale-98 cursor-pointer flex items-center justify-center gap-2"
             >
               <PlusCircle className="w-5 h-5" />
-              <span>ثبت و ذخیره آگهی</span>
+              <span>{isSavingListing ? 'در حال ذخیره…' : 'ثبت و ذخیره آگهی'}</span>
             </button>
           </form>
         </div>
