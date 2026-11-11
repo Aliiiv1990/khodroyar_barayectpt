@@ -131,7 +131,7 @@ export const pocketbaseListings = {
     const first = await pocketbase.collection('listings').getList(1, pageSize, {
       filter,
       sort: '-created',
-      fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
+      fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,created_by,photos,created,updated',
     });
     const records: RecordModel[] = [...first.items];
     for (let firstPage = 2; firstPage <= first.totalPages; firstPage += 4) {
@@ -143,7 +143,7 @@ export const pocketbaseListings = {
         pocketbase.collection('listings').getList(pageNumber, pageSize, {
           filter,
           sort: '-created',
-          fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
+          fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,created_by,photos,created,updated',
         }),
       ));
       remainingPages.forEach((page) => records.push(...page.items));
