@@ -102,7 +102,8 @@ migrate((app) => {
       { name: "error_summary", type: "text", max: 5000 },
       { name: "source_file", type: "text", max: 255 },
     ],
-    indexes: ["CREATE INDEX idx_import_batches_status_created ON import_batches (status, created)"],
+    indexes: ["CREATE UNIQUE INDEX idx_import_batches_name ON import_batches (batch_name)",
+      "CREATE INDEX idx_import_batches_status_created ON import_batches (status, created)"],
   });
   app.save(batches);
 
