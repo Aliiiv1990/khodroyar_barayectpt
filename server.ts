@@ -1946,9 +1946,19 @@ async function extractZipDirectlyToDisk(
 // 1. POST /api/admin/upload-chunk/init: Initializes a chunked upload session or checks resume state
 app.post('/api/admin/upload-chunk/init', (req, res) => {
   try {
-    const { uploadId, fileName, fileSize, totalChunks, batchName, publishedBy } = req.body;
-    if (!uploadId || !totalChunks) {
-      return res.status(400).json({ success: false, error: 'پارامترهای شروع آپلود ناقص است.' });
+    const { uploadId, fileName, fileSize, totalChunks, batchName, publishedBy } = req.body || {};
+    const parsedTotalChunks = Number(totalChunks);
+    const parsedFileSize = Number(fileSize);
+    if (
+      typeof uploadId !== 'string' ||
+      !/^[a-zA-Z0-9_-]{8,80}$/.test(uploadId) ||
+      !Number.isSafeInteger(parsedTotalChunks) ||
+      parsedTotalChunks < 1 ||
+      parsedTotalChunks > 50000 ||
+      !Number.isSafeInteger(parsedFileSize) ||
+      parsedFileSize < 1
+    ) {
+      return res.status(400).json({ success: false, error: 'مشخصات فایل برای شروع آپلود معتبر نیست.' });
     }
 
     const uploadsDir = getUploadsDir();
@@ -1960,8 +1970,8 @@ app.post('/api/admin/upload-chunk/init', (req, res) => {
     const meta: ChunkUploadSession = {
       uploadId,
       fileName: fileName || 'archive.zip',
-      fileSize: Number(fileSize) || 0,
-      totalChunks: Number(totalChunks),
+      fileSize: parsedFileSize,
+      totalChunks: parsedTotalChunks,
       batchName: batchName || fileName || `car_session_${Date.now()}.zip`,
       publishedBy: publishedBy || 'مدیر سیستم',
       createdAt: Date.now(),
@@ -1997,9 +2007,10 @@ app.post(
   async (req, res) => {
     try {
       const uploadId = String(req.query.uploadId || '').trim();
-      const chunkIndex = parseInt(String(req.query.chunkIndex || '-1'), 10);
+      const chunkIndex = Number.parseInt(String(req.query.chunkIndex || '-1'), 10);
+      const declaredTotalChunks = Number.parseInt(String(req.query.totalChunks || '-1'), 10);
 
-      if (!uploadId || chunkIndex < 0) {
+      if (!/^[a-zA-Z0-9_-]{8,80}$/.test(uploadId) || !Number.isInteger(chunkIndex) || chunkIndex < 0) {
         return res.status(400).json({ success: false, error: 'شناسه یا شماره تکه نامعتبر است.' });
       }
 
@@ -2010,12 +2021,30 @@ app.post(
 
       const uploadsDir = getUploadsDir();
       const sessionDir = path.join(uploadsDir, uploadId);
-      if (!fs.existsSync(sessionDir)) {
-        fs.mkdirSync(sessionDir, { recursive: true });
+      const metaPath = path.join(sessionDir, 'meta.json');
+      if (!fs.existsSync(metaPath)) {
+        return res.status(409).json({ success: false, error: 'نشست آپلود وجود ندارد؛ درخواست شروع آپلود را دوباره ارسال کنید.' });
+      }
+      const meta = JSON.parse(await fs.promises.readFile(metaPath, 'utf8'));
+      if (
+        !Number.isInteger(meta.totalChunks) ||
+        chunkIndex >= meta.totalChunks ||
+        declaredTotalChunks !== meta.totalChunks
+      ) {
+        return res.status(400).json({ success: false, error: 'شماره تکه با مشخصات فایل آپلود هم‌خوانی ندارد.' });
+      }
+
+      const expectedLength = chunkIndex === meta.totalChunks - 1
+        ? meta.fileSize - chunkIndex * 1.5 * 1024 * 1024
+        : 1.5 * 1024 * 1024;
+      if (rawBuffer.length !== expectedLength) {
+        return res.status(400).json({ success: false, error: 'اندازه تکه ناقص یا نامعتبر است؛ این تکه دوباره ارسال شود.' });
       }
 
       const chunkPath = path.join(sessionDir, `chunk_${chunkIndex}.part`);
-      await fs.promises.writeFile(chunkPath, rawBuffer);
+      const tempChunkPath = `${chunkPath}.tmp`;
+      await fs.promises.writeFile(tempChunkPath, rawBuffer);
+      await fs.promises.rename(tempChunkPath, chunkPath);
 
       res.json({
         success: true,
@@ -2128,13 +2157,8 @@ app.post('/api/admin/upload-chunk/finalize', async (req, res) => {
       writeStream.on('error', reject);
     });
 
-    // Delete part files to free disk space immediately
-    for (let i = 0; i < totalChunks; i++) {
-      try {
-        fs.unlinkSync(path.join(sessionDir, `chunk_${i}.part`));
-      } catch {}
-    }
-
+    // Keep all chunks and the assembled ZIP until the API response confirms
+    // both extraction and the PostgreSQL transaction have succeeded.
     // Read stitched zip and extract directly to persistent disk
     const zipBuffer = await fs.promises.readFile(completeZipPath);
     const targetBatchName = customBatchName || meta.batchName || meta.fileName || `car_session_${Date.now()}.zip`;
@@ -2142,14 +2166,15 @@ app.post('/api/admin/upload-chunk/finalize', async (req, res) => {
 
     const extractResult = await extractZipDirectlyToDisk(zipBuffer, targetBatchName, targetPublishedBy);
 
-    // Clean up temporary session folder
-    try {
-      if (fs.existsSync(completeZipPath)) fs.unlinkSync(completeZipPath);
-      if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
-      fs.rmdirSync(sessionDir);
-    } catch (cleanupErr) {
-      console.warn('Could not clean up temporary upload directory:', cleanupErr);
-    }
+    // The PostgreSQL request middleware commits before the response is sent.
+    // Retain the upload on any non-2xx response so the admin can safely retry.
+    res.once('finish', () => {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        fs.promises.rm(sessionDir, { recursive: true, force: true }).catch((cleanupErr) => {
+          console.warn('Could not clean up completed upload directory:', cleanupErr);
+        });
+      }
+    });
 
     res.json(extractResult);
   } catch (err: any) {
