@@ -24,6 +24,7 @@ function fileUrl(record: RecordModel, fileName: string, thumb = false): string {
 export function fromPocketBaseRecord(record: RecordModel): CarListing {
   const photos = Array.isArray(record.photos) ? record.photos as string[] : [];
   const imageUrl = photos[0] ? fileUrl(record, photos[0]) : '';
+  const thumbnailUrl = photos[0] ? fileUrl(record, photos[0], true) : '';
   return sanitizeAndIndexListing({
     id: String(record.legacy_id || record.id),
     type: (record.type === 'buy_request' ? 'buy_request' : 'sale') as CarListingType,
@@ -44,7 +45,7 @@ export function fromPocketBaseRecord(record: RecordModel): CarListing {
     phoneNumber: '', // Private contact data is loaded separately for authenticated users.
     description: String(record.description || ''),
     createdAt: String(record.created || new Date().toISOString()),
-    imageThumbnailBase64: '',
+    imageThumbnailBase64: thumbnailUrl,
     imageFullBase64: '',
     hasPhoto: photos.length > 0,
     imageUrl: imageUrl || undefined,
@@ -99,7 +100,7 @@ function toFormData(listing: Partial<CarListing>, files: File[] = []): FormData 
 
 export const pocketbaseListings = {
   async list(options: { type?: CarListingType; pageSize?: number } = {}): Promise<CarListing[]> {
-    const pageSize = Math.min(Math.max(options.pageSize || 200, 1), 500);
+    const pageSize = Math.min(Math.max(options.pageSize || 500, 1), 500);
     const filter = options.type
       ? pocketbase.filter('is_active = true && type = {:type}', { type: options.type })
       : 'is_active = true';
@@ -109,13 +110,17 @@ export const pocketbaseListings = {
       fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
     });
     const records: RecordModel[] = [...first.items];
-    for (let page = 2; page <= first.totalPages; page += 1) {
-      const result = await pocketbase.collection('listings').getList(page, pageSize, {
-        filter,
-        sort: '-created',
-        fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
-      });
-      records.push(...result.items);
+    if (first.totalPages > 1) {
+      const remainingPages = await Promise.all(
+        Array.from({ length: first.totalPages - 1 }, (_, index) =>
+          pocketbase.collection('listings').getList(index + 2, pageSize, {
+            filter,
+            sort: '-created',
+            fields: 'id,legacy_id,type,title,brand,model,year,has_explicit_year,price,price_formatted,mileage,mileage_formatted,color,gearbox,body_condition,fuel_type,city,description,source,creator_name,import_batch,import_date,is_text_only,is_edited,is_active,revision,photos,created,updated',
+          }),
+        ),
+      );
+      remainingPages.forEach((page) => records.push(...page.items));
     }
     const mapped = records.map(fromPocketBaseRecord);
     if (pocketbase.authStore.isValid && mapped.length) {
@@ -135,7 +140,7 @@ export const pocketbaseListings = {
     payload.append('created_by', String(pocketbase.authStore.record?.id || ''));
     const record = await pocketbase.collection('listings').create(payload);
     if (listing.phoneNumber && pocketbase.authStore.isValid) {
-      await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.model?.id || '') });
+      await pocketbase.collection('listing_contacts').create({ listing_id: String(listing.id), phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.record?.id || '') });
     }
     return { ...fromPocketBaseRecord(record), phoneNumber: listing.phoneNumber || '' };
   },
