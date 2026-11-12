@@ -37,6 +37,7 @@ export interface CarListing {
   importDate?: string; // e.g. "1403/08/08"
   mediaId?: string; // Media file identifier (can be shared across multiple listings)
   revision?: number; // Version / Revision sequence for multi-device synchronization
+  _createdById?: string; // Internal immutable PocketBase owner ID
   // Normalized cached string for instant sub-millisecond filtering
   _searchIndex?: string;
 }

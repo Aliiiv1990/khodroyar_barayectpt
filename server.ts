@@ -4,7 +4,9 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import JSZip from 'jszip';
+import { Open as unzipperOpen } from 'unzipper';
 import { Pool, type PoolClient } from 'pg';
+import PocketBase from 'pocketbase';
 import {
   parseZipArchive,
   parseSessionJson,
@@ -154,6 +156,18 @@ app.use('/api', (req, res, next) => {
     pathName === '/listings' && req.method === 'GET' ||
     pathName === '/sync-meta' && req.method === 'GET'
   ) {
+    return next();
+  }
+
+  // In PocketBase mode these ZIP endpoints verify the Bearer token against the
+  // PocketBase users collection in each handler; do not require the legacy PIN cookie.
+  if (process.env.POCKETBASE_URL && (
+    pathName === '/admin/upload-chunk/init' ||
+    pathName === '/admin/upload-chunk' ||
+    pathName.startsWith('/admin/upload-chunk/status/') ||
+    pathName === '/admin/upload-chunk/finalize' ||
+    pathName === '/admin/upload-zip'
+  )) {
     return next();
   }
 
@@ -422,7 +436,7 @@ let postgresDirty = false;
 let postgresLastLoadedVersion = '';
 
 const pgConnectionString = process.env.PG_URI || process.env.DATABASE_URL || '';
-const postgresPool: Pool | null = pgConnectionString
+const postgresPool: Pool | null = pgConnectionString && !process.env.POCKETBASE_URL
   ? new Pool({
       connectionString: pgConnectionString,
       max: Math.max(2, Math.min(10, Number(process.env.PG_POOL_MAX) || 5)),
@@ -680,6 +694,16 @@ async function persistPostgresSnapshot(client: PoolClient): Promise<void> {
 }
 
 async function initializePostgresStore(): Promise<void> {
+  if (isProd && !String(process.env.POCKETBASE_URL || '').trim()) {
+    throw new Error('PocketBase is the only supported production database. Configure POCKETBASE_URL before deployment.');
+  }
+  if (process.env.POCKETBASE_URL) {
+    if (isProd && !fs.existsSync('/data')) {
+      throw new Error('PocketBase import processing requires the Node app persistent disk mounted at /data.');
+    }
+    console.log('Database backend: PocketBase (native database, auth, file storage and realtime)');
+    return;
+  }
   if (isProd && !isAuthConfigured()) {
     throw new Error(
       'Secure server authentication is required in production. Configure distinct 4-digit ADMIN_PIN and COLLEAGUE_PIN values plus a random SESSION_SECRET of at least 32 characters.'
@@ -930,7 +954,28 @@ function broadcastSyncEvent(eventType = 'update', extraData: Record<string, any>
 // -----------------------------------------------------------------------------
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  if (process.env.POCKETBASE_URL) {
+    try {
+      const pb = new PocketBase(String(process.env.POCKETBASE_URL).trim());
+      const [all, sales, buys] = await Promise.all([
+        pb.collection('listings').getList(1, 1, { filter: 'is_active = true', sort: '-updated', fields: 'id,updated' }),
+        pb.collection('listings').getList(1, 1, { filter: pb.filter('is_active = true && type = {:type}', { type: 'sale' }), fields: 'id' }),
+        pb.collection('listings').getList(1, 1, { filter: pb.filter('is_active = true && type = {:type}', { type: 'buy_request' }), fields: 'id' }),
+      ]);
+      return res.json({
+        status: 'ok', platform: 'Liara Cloud (Node.js)', dbBackend: 'pocketbase',
+        dbLocation: 'PocketBase service', imageStorage: 'PocketBase file storage',
+        isLiaraDisk: fs.existsSync('/data'), totalListings: all.totalItems,
+        salesCount: sales.totalItems, buysCount: buys.totalItems,
+        lastUpdated: String(all.items[0]?.updated || new Date().toISOString()),
+        serverTime: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('PocketBase health check failed:', error);
+      return res.status(503).json({ status: 'degraded', dbBackend: 'pocketbase', error: 'PocketBase is not reachable.' });
+    }
+  }
   const active = pruneOldServerListings(memoryDb.listings);
   const salesCount = active.filter((l) => l.type === 'sale').length;
   const buysCount = active.filter((l) => l.type === 'buy_request').length;
@@ -1599,6 +1644,161 @@ app.post('/api/admin/sync-images', (req, res) => {
 // Zero-RAM Streaming ZIP Extraction & Resumable Chunk Upload Engine
 // -----------------------------------------------------------------------------
 
+const pocketBaseAdminTokenCache = new Map<string, { userId: string; expiresAt: number }>();
+
+async function verifyPocketBaseAdminToken(token: string): Promise<string> {
+  const pocketBaseUrl = String(process.env.POCKETBASE_URL || '').trim();
+  if (!pocketBaseUrl) throw new Error('POCKETBASE_URL روی سرور تنظیم نشده است.');
+  if (!token) throw new Error('برای این عملیات باید با حساب مدیر وارد شده باشید.');
+  const cacheKey = createHash('sha256').update(token).digest('hex');
+  const cached = pocketBaseAdminTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.userId;
+  const pb = new PocketBase(pocketBaseUrl);
+  pb.authStore.save(token, null);
+  let auth: any;
+  try { auth = await pb.collection('users').authRefresh(); }
+  catch { throw new Error('نشست PocketBase معتبر نیست؛ دوباره با حساب مدیر وارد شوید.'); }
+  if (auth.record?.role !== 'admin' || auth.record?.enabled !== true) {
+    throw new Error('آپلود گروهی فقط برای حساب مدیر فعال است.');
+  }
+  const userId = String(auth.record.id);
+  pocketBaseAdminTokenCache.set(cacheKey, { userId, expiresAt: Date.now() + 3 * 60 * 1000 });
+  return userId;
+}
+
+async function importParsedListingsToPocketBase(
+  listings: any[],
+  batchName: string,
+  token: string,
+  imagesDir: string,
+  extractedImagesCount: number,
+): Promise<{ saved: number; failed: number; batchId: string }> {
+  const userId = await verifyPocketBaseAdminToken(token);
+  const pb = new PocketBase(String(process.env.POCKETBASE_URL).trim());
+  pb.authStore.save(token, null);
+  let batch: any;
+  try {
+    const existingBatch = await pb.collection('import_batches').getFirstListItem(
+      pb.filter('batch_name = {:batchName}', { batchName }),
+    );
+    batch = await pb.collection('import_batches').update(existingBatch.id, {
+      status: 'processing', record_count: listings.length, processed_count: 0, error_summary: '', source_file: batchName,
+    });
+  } catch (error: any) {
+    if (error?.status !== 404) throw error;
+    batch = await pb.collection('import_batches').create({
+      batch_name: batchName, status: 'processing', record_count: listings.length, processed_count: 0, error_summary: '', source_file: batchName,
+    });
+  }
+  const errors: string[] = [];
+  let cursor = 0;
+  let processed = 0;
+  let saved = 0;
+  let failed = 0;
+  let lastProgressSave = 0;
+  const fileCandidates = (item: any): string[] => {
+    const safeId = safeImageStorageId(item.id);
+    const names = [safeId + '.jpg'];
+    if (item.mediaId) names.push(safeImageStorageId(item.mediaId) + '.jpg');
+    if (item.imageFileName) names.push(path.basename(String(item.imageFileName).replace(/\\/g, '/')));
+    return names;
+  };
+  const makeFields = (item: any): Record<string, string> => ({
+    legacy_id: String(item.id), type: item.type === 'buy_request' ? 'buy_request' : 'sale',
+    title: String(item.title || item.model || 'خودرو'), brand: String(item.brand || ''), model: String(item.model || ''),
+    year: String(Number(item.year || 0)), has_explicit_year: String(Boolean(item.hasExplicitYear)),
+    price: String(Number(item.price || 0)), price_formatted: String(item.priceFormatted || 'توافقی'),
+    mileage: String(Number(item.mileage || 0)), mileage_formatted: String(item.mileageFormatted || 'صفر'),
+    color: String(item.color || 'سفید'), gearbox: String(item.gearbox || 'دنده‌ای'),
+    body_condition: String(item.bodyCondition || 'بدون رنگ'), fuel_type: String(item.fuelType || 'بنزین'),
+    city: String(item.city || ''), description: String(item.description || ''),
+    file_description: String(item.fileDescription || ''), source: item.source === 'user' ? 'user' : 'admin',
+    creator_name: String(item.creatorName || ''), import_batch: batchName, import_date: String(item.importDate || ''),
+    is_text_only: String(Boolean(item.isTextOnly)), is_edited: String(Boolean(item.isEdited)),
+    is_active: 'true', revision: String(Number(item.revision || 1)),
+  });
+  const worker = async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= listings.length) return;
+      const item = listings[index];
+      try {
+        const form = new FormData();
+        Object.entries(makeFields(item)).forEach(([key, value]) => form.append(key, value));
+        let photoPath: string | null = null;
+        for (const candidate of fileCandidates(item)) {
+          const safePath = safeImagePath(imagesDir, candidate);
+          if (safePath && fs.existsSync(safePath)) { photoPath = safePath; break; }
+        }
+        if (photoPath) {
+          const stat = await fs.promises.stat(photoPath);
+          if (stat.size > 12 * 1024 * 1024) throw new Error('حجم عکس از سقف ۱۲ مگابایت بیشتر است.');
+          const buffer = await fs.promises.readFile(photoPath);
+          const isPng = buffer.length > 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
+          const isWebp = buffer.length > 12 && buffer.toString('ascii', 8, 12) === 'WEBP';
+          const isGif = buffer.length > 3 && buffer.toString('ascii', 0, 3) === 'GIF';
+          const isAvif = buffer.length > 12 && buffer.toString('ascii', 4, 12).includes('ftypavif');
+          const isJpeg = buffer.length > 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+          if (!isPng && !isWebp && !isGif && !isAvif && !isJpeg) throw new Error('قالب عکس پشتیبانی نمی‌شود.');
+          const mime = isPng ? 'image/png' : isWebp ? 'image/webp' : isGif ? 'image/gif' : isAvif ? 'image/avif' : 'image/jpeg';
+          const extension = isPng ? 'png' : isWebp ? 'webp' : isGif ? 'gif' : isAvif ? 'avif' : 'jpg';
+          form.append('photos', new Blob([new Uint8Array(buffer)], { type: mime }), safeImageStorageId(item.id) + '.' + extension);
+        }
+        let existing: any = null;
+        try { existing = await pb.collection('listings').getFirstListItem(pb.filter('legacy_id = {:legacyId}', { legacyId: String(item.id) })); }
+        catch (error: any) { if (error?.status !== 404) throw error; }
+        const preserveManualEdit = Boolean(existing?.is_edited === true && !item.isEdited);
+        if (existing && !preserveManualEdit) {
+          form.set('created_by', String(existing.created_by || userId));
+          form.set('revision', String(Number(existing.revision || 1) + 1));
+          await pb.collection('listings').update(existing.id, form);
+        } else if (!existing) {
+          form.append('created_by', userId);
+          await pb.collection('listings').create(form);
+        }
+        const phone = String(item.phoneNumber || '').trim();
+        if (phone && !preserveManualEdit) {
+          try {
+            const contact = await pb.collection('listing_contacts').getFirstListItem(pb.filter('listing_id = {:listingId}', { listingId: String(item.id) }));
+            await pb.collection('listing_contacts').update(contact.id, { phone_number: phone, owner_id: String(contact.owner_id || userId) });
+          } catch (error: any) {
+            if (error?.status !== 404) throw error;
+            await pb.collection('listing_contacts').create({ listing_id: String(item.id), phone_number: phone, owner_id: userId });
+          }
+        }
+        saved += 1;
+      } catch (error: any) {
+        failed += 1;
+        errors.push('رکورد ' + (index + 1) + ' (' + String(item.id) + '): ' + String(error?.message || error).slice(0, 180));
+      }
+      processed += 1;
+      if (processed - lastProgressSave >= 20 || processed === listings.length) {
+        lastProgressSave = processed;
+        await pb.collection('import_batches').update(batch.id, {
+          processed_count: processed, error_summary: errors.slice(0, 20).join('\\n').slice(0, 4500),
+        });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(2, listings.length) }, () => worker()));
+  await pb.collection('import_batches').update(batch.id, {
+    status: failed === 0 ? 'completed' : 'failed', record_count: listings.length, processed_count: processed,
+    error_summary: errors.slice(0, 20).join('\\n').slice(0, 4500),
+  });
+  try {
+    await pb.collection('audit_logs').create({
+      actor_id: userId,
+      action: 'zip_import',
+      collection_name: 'listings',
+      record_id: String(batch.id),
+      summary: 'ZIP import batch=' + batchName + '; saved=' + saved + '; failed=' + failed,
+    });
+  } catch (auditError) {
+    console.warn('[PocketBase] Could not write ZIP import audit entry:', auditError);
+  }
+  if (failed > 0) throw new Error('بخشی از اطلاعات ثبت نشد (' + failed + ' مورد). اجرای دوباره همین ZIP امن است و رکورد تکراری ایجاد نمی‌کند. ' + errors.slice(0, 3).join(' | '));
+  return { saved, failed, batchId: String(batch.id) };
+}
 interface ChunkUploadSession {
   uploadId: string;
   fileName: string;
@@ -1614,9 +1814,10 @@ interface ChunkUploadSession {
  * with zero base64 RAM overhead, indexing all photos in diskImageSet immediately.
  */
 async function extractZipDirectlyToDisk(
-  zipBuffer: Buffer,
+  zipSource: Buffer | string,
   customBatchName?: string,
-  publishedBy = 'مدیر سیستم'
+  publishedBy = 'مدیر سیستم',
+  pocketBaseToken?: string
 ): Promise<{
   success: boolean;
   message: string;
@@ -1632,18 +1833,30 @@ async function extractZipDirectlyToDisk(
   revision: number;
   lastUpdated: string;
 }> {
-  const imagesDir = getImagesDir();
-  const zip = new JSZip();
-  const loadedZip = await zip.loadAsync(zipBuffer);
+  const imagesDir = pocketBaseToken ? path.join(getUploadsDir(), 'pb-import-' + Date.now()) : getImagesDir();
+  await fs.promises.mkdir(imagesDir, { recursive: true });
+  try {
+  const loadedZip = typeof zipSource === 'string'
+    ? await unzipperOpen.file(zipSource)
+    : await unzipperOpen.buffer(zipSource);
+  if (pocketBaseToken && fs.existsSync('/data')) {
+    const uncompressedBytes = loadedZip.files.reduce((sum: number, file: any) => sum + Number(file.uncompressedSize || 0), 0);
+    const disk = await fs.promises.statfs('/data');
+    const freeBytes = Number(disk.bavail) * Number(disk.bsize);
+    if (uncompressedBytes > freeBytes * 0.85) {
+      const requiredGb = (uncompressedBytes / (1024 ** 3)).toFixed(2);
+      const freeGb = (freeBytes / (1024 ** 3)).toFixed(2);
+      throw new Error('فضای خالی دیسک موقت برای استخراج ZIP کافی نیست. حجم بازشده حدود ' + requiredGb + ' گیگابایت و فضای خالی ' + freeGb + ' گیگابایت است. ابتدا دیسک برنامه Node را افزایش دهید.');
+    }
+  }
 
   const textMap = new Map<string, string>();
-  const jsonFiles: JSZip.JSZipObject[] = [];
-  const dataEntries: { name: string; baseName: string; idWithoutExt: string; entry: JSZip.JSZipObject }[] = [];
-  const fileNames = Object.keys(loadedZip.files);
+  const jsonFiles: any[] = [];
+  const dataEntries: { name: string; baseName: string; idWithoutExt: string; entry: any }[] = [];
 
-  for (const name of fileNames) {
-    const entry = loadedZip.files[name];
-    if (entry.dir) continue;
+  for (const entry of loadedZip.files) {
+    const name = entry.path;
+    if (entry.type === 'Directory') continue;
     const baseName = name.split('/').pop() || name;
     if (baseName.toLowerCase().endsWith('.json')) {
       jsonFiles.push(entry);
@@ -1655,8 +1868,8 @@ async function extractZipDirectlyToDisk(
 
   // Sort jsonFiles so session.json is processed first
   jsonFiles.sort((a, b) => {
-    const aName = a.name.split('/').pop()?.toLowerCase() || '';
-    const bName = b.name.split('/').pop()?.toLowerCase() || '';
+    const aName = a.path.split('/').pop()?.toLowerCase() || '';
+    const bName = b.path.split('/').pop()?.toLowerCase() || '';
     if (aName === 'session.json') return -1;
     if (bName === 'session.json') return 1;
     return 0;
@@ -1666,10 +1879,11 @@ async function extractZipDirectlyToDisk(
 
   for (const jFile of jsonFiles) {
     try {
-      const fileNameLower = jFile.name.toLowerCase();
+      if (Number(jFile.uncompressedSize || 0) > 50 * 1024 * 1024) throw new Error('حجم فایل JSON از سقف ۵۰ مگابایت بیشتر است.');
+      const fileNameLower = jFile.path.toLowerCase();
       const isDedicatedBuyerFile = /buyer|kharidar|kharid|order|request|moshtari|خریدار|خرید|سفارش|مشتری|درخواست/i.test(fileNameLower);
       const isDedicatedSellerFile = /seller|forush|sale|froosh|فروش|فروشنده/i.test(fileNameLower);
-      const sessionContent = await jFile.async('string');
+      const sessionContent = (await jFile.buffer()).toString('utf-8');
       const parsed = JSON.parse(sessionContent);
 
       if (Array.isArray(parsed)) {
@@ -1712,7 +1926,7 @@ async function extractZipDirectlyToDisk(
       }
     } catch (err) {
       // Do not silently continue with a partial catalogue when a JSON source file is corrupt.
-      throw new Error(`خواندن فایل JSON در آرشیو ناموفق بود: ${jFile.name} — ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`خواندن فایل JSON در آرشیو ناموفق بود: ${jFile.path} — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1738,8 +1952,9 @@ async function extractZipDirectlyToDisk(
   // Extract entries directly to disk and memory index without Base64 strings in memory
   for (const { name, baseName, idWithoutExt, entry } of dataEntries) {
     try {
+      if (Number(entry.uncompressedSize || 0) > 50 * 1024 * 1024) throw new Error('حجم یک فایل داخل ZIP از سقف ۵۰ مگابایت بیشتر است: ' + name);
       const lowerBase = baseName.toLowerCase();
-      const nodeBuffer = await entry.async('nodebuffer');
+      const nodeBuffer = await entry.buffer();
       if (!nodeBuffer || nodeBuffer.length === 0) continue;
 
       const bytes = nodeBuffer;
@@ -1905,6 +2120,30 @@ async function extractZipDirectlyToDisk(
     item.imageFullBase64 = '';
   }
 
+  if (pocketBaseToken) {
+    let imported: { saved: number; failed: number; batchId: string };
+    try {
+      imported = await importParsedListingsToPocketBase(result.listings, batchName, pocketBaseToken, imagesDir, savedImagesCount);
+    } finally {
+      await fs.promises.rm(imagesDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    const timestamp = new Date().toISOString();
+    return {
+      success: true,
+      message: 'فایل با موفقیت در PocketBase ثبت شد: ' + result.sellersCount + ' خودرو، ' + result.buyersCount + ' درخواست خرید و ' + savedImagesCount + ' عکس.',
+      total: imported.saved,
+      batchCount: result.listings.length,
+      sourceRecordsCount,
+      skippedRecordsCount,
+      errorsCount: result.errorsCount,
+      sellersCount: result.sellersCount,
+      buyersCount: result.buyersCount,
+      extractedImagesCount: savedImagesCount,
+      batchName,
+      revision: 1,
+      lastUpdated: timestamp,
+    };
+  }
   // Preserve other batches
   const otherBatches = memoryDb.listings.filter((l) => (l.importBatchName || '') !== batchName);
   const combined = [...result.listings, ...otherBatches];
@@ -1937,6 +2176,9 @@ async function extractZipDirectlyToDisk(
     revision: memoryDb.revision,
     lastUpdated: memoryDb.lastUpdated,
   };
+  } finally {
+    if (pocketBaseToken) await fs.promises.rm(imagesDir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -1944,8 +2186,9 @@ async function extractZipDirectlyToDisk(
 // -----------------------------------------------------------------------------
 
 // 1. POST /api/admin/upload-chunk/init: Initializes a chunked upload session or checks resume state
-app.post('/api/admin/upload-chunk/init', (req, res) => {
+app.post('/api/admin/upload-chunk/init', async (req, res) => {
   try {
+    if (process.env.POCKETBASE_URL) await verifyPocketBaseAdminToken(String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim());
     const { uploadId, fileName, fileSize, totalChunks, batchName, publishedBy } = req.body || {};
     const parsedTotalChunks = Number(totalChunks);
     const parsedFileSize = Number(fileSize);
@@ -2006,6 +2249,7 @@ app.post(
   express.raw({ type: () => true, limit: '10mb' }),
   async (req, res) => {
     try {
+      if (process.env.POCKETBASE_URL) await verifyPocketBaseAdminToken(String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim());
       const uploadId = String(req.query.uploadId || '').trim();
       const chunkIndex = Number.parseInt(String(req.query.chunkIndex || '-1'), 10);
       const declaredTotalChunks = Number.parseInt(String(req.query.totalChunks || '-1'), 10);
@@ -2059,8 +2303,9 @@ app.post(
 );
 
 // 3. GET /api/admin/upload-chunk/status/:uploadId: Returns resume status
-app.get('/api/admin/upload-chunk/status/:uploadId', (req, res) => {
+app.get('/api/admin/upload-chunk/status/:uploadId', async (req, res) => {
   try {
+    if (process.env.POCKETBASE_URL) await verifyPocketBaseAdminToken(String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim());
     const uploadId = String(req.params.uploadId || '').trim();
     const uploadsDir = getUploadsDir();
     const sessionDir = path.join(uploadsDir, uploadId);
@@ -2098,6 +2343,8 @@ app.get('/api/admin/upload-chunk/status/:uploadId', (req, res) => {
 // 4. POST /api/admin/upload-chunk/finalize: Stitches chunks via file stream, extracts to disk, and updates catalog
 app.post('/api/admin/upload-chunk/finalize', async (req, res) => {
   try {
+    const pocketBaseToken = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    if (process.env.POCKETBASE_URL) await verifyPocketBaseAdminToken(pocketBaseToken);
     const { uploadId, batchName: customBatchName, publishedBy: customPublishedBy } = req.body;
     if (!uploadId) {
       return res.status(400).json({ success: false, error: 'شناسه آپلود ارسال نشده است.' });
@@ -2158,15 +2405,14 @@ app.post('/api/admin/upload-chunk/finalize', async (req, res) => {
     });
 
     // Keep all chunks and the assembled ZIP until the API response confirms
-    // both extraction and the PostgreSQL transaction have succeeded.
-    // Read stitched zip and extract directly to persistent disk
-    const zipBuffer = await fs.promises.readFile(completeZipPath);
+    // both extraction and the selected database import have succeeded.
+    // Open the stitched ZIP by path and stream individual entries from disk.
     const targetBatchName = customBatchName || meta.batchName || meta.fileName || `car_session_${Date.now()}.zip`;
     const targetPublishedBy = customPublishedBy || meta.publishedBy || 'مدیر سیستم (آپلود تکه‌ای)';
 
-    const extractResult = await extractZipDirectlyToDisk(zipBuffer, targetBatchName, targetPublishedBy);
+    const extractResult = await extractZipDirectlyToDisk(completeZipPath, targetBatchName, targetPublishedBy, pocketBaseToken || undefined);
 
-    // The PostgreSQL request middleware commits before the response is sent.
+    // Retain the upload until the selected backend confirms the import.
     // Retain the upload on any non-2xx response so the admin can safely retry.
     res.once('finish', () => {
       if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -2189,6 +2435,8 @@ app.post(
   express.raw({ type: () => true, limit: '300mb' }),
   async (req, res) => {
     try {
+      const pocketBaseToken = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+      if (process.env.POCKETBASE_URL) await verifyPocketBaseAdminToken(pocketBaseToken);
       const rawBuffer = req.body;
       if (!rawBuffer || !(rawBuffer instanceof Buffer) || rawBuffer.length < 50) {
         return res.status(400).json({ success: false, error: 'فایل زیپ ارسالی نامعتبر یا خالی است.' });
@@ -2199,7 +2447,7 @@ app.post(
         `car_session_${new Date().toLocaleDateString('fa-IR').replace(/\//g, '_')}.zip`;
       const publishedBy = (req.query.publishedBy as string) || 'مدیر سیستم (آپلود مستقیم زیپ)';
 
-      const extractResult = await extractZipDirectlyToDisk(rawBuffer, customBatchName, publishedBy);
+      const extractResult = await extractZipDirectlyToDisk(rawBuffer, customBatchName, publishedBy, pocketBaseToken || undefined);
       res.json(extractResult);
     } catch (err: any) {
       console.error('Error in upload-zip:', err);

@@ -23,7 +23,7 @@ import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 interface NewListingModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAddListing: (listing: CarListing) => void;
+  onAddListing: (listing: CarListing) => Promise<void> | void;
   defaultType?: CarListingType;
 }
 
@@ -50,6 +50,9 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
   const [bodyCondition, setBodyCondition] = useState('بدون رنگ');
   const [description, setDescription] = useState('');
   const [feedbackSuccess, setFeedbackSuccess] = useState(false);
+  const [draftId, setDraftId] = useState(() => 'manual-' + Date.now());
+  const [isSavingListing, setIsSavingListing] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
   const recognitionRef = useRef<any>(null);
 
@@ -68,6 +71,8 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
     if (isOpen) {
       setType(defaultType);
       setFeedbackSuccess(false);
+      setDraftId('manual-' + Date.now());
+      setSubmitError('');
       setVoiceError('');
       setVoiceTranscript('');
     }
@@ -184,7 +189,7 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
     setIsRecording(false);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!model.trim()) return;
 
@@ -217,7 +222,7 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
         : `${model} به رنگ ${color}`;
 
     const newListing: CarListing = {
-      id: `manual-${Date.now()}`,
+      id: draftId,
       type,
       title: fullTitle,
       brand,
@@ -246,12 +251,17 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
     };
 
     newListing._searchIndex = buildSearchIndex(newListing);
-    onAddListing(newListing);
-
-    setFeedbackSuccess(true);
-    setTimeout(() => {
-      onClose();
-    }, 1200);
+    setIsSavingListing(true);
+    setSubmitError('');
+    try {
+      await onAddListing(newListing);
+      setFeedbackSuccess(true);
+      setTimeout(() => onClose(), 1200);
+    } catch {
+      setSubmitError('ثبت آگهی انجام نشد. اتصال اینترنت و ورود به حساب را بررسی کنید.');
+    } finally {
+      setIsSavingListing(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -326,6 +336,12 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
             <div className="bg-emerald-500 text-white p-3 rounded-2xl flex items-center justify-center gap-2 font-bold animate-in fade-in">
               <CheckCircle2 className="w-5 h-5" />
               <span>آگهی با موفقیت ثبت شد و در لیست قرار گرفت!</span>
+            </div>
+          )}
+
+          {submitError && (
+            <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/60 text-red-700 dark:text-red-300 p-3 rounded-xl text-xs font-bold text-center">
+              {submitError}
             </div>
           )}
 
@@ -532,11 +548,11 @@ export const NewListingModal: React.FC<NewListingModalProps> = ({
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={!model.trim()}
+              disabled={!model.trim() || isSavingListing}
               className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 text-white rounded-2xl font-black text-sm sm:text-base shadow-md transition-transform active:scale-98 cursor-pointer flex items-center justify-center gap-2"
             >
               <PlusCircle className="w-5 h-5" />
-              <span>ثبت و ذخیره آگهی</span>
+              <span>{isSavingListing ? 'در حال ذخیره…' : 'ثبت و ذخیره آگهی'}</span>
             </button>
           </form>
         </div>

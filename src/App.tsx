@@ -38,6 +38,7 @@ import {
   fetchSyncMetaFromLiara,
   deleteListingFromLiara,
 } from './utils/liaraApi';
+import { pocketbase, pocketbaseListings, type PocketBaseListingEvent } from './lib/pocketbase';
 
 const DEFAULT_FILTERS: FilterOptions = {
   type: 'sale',
@@ -47,6 +48,8 @@ const DEFAULT_FILTERS: FilterOptions = {
   dayFilter: 'all',
   city: '',
 };
+
+const USE_POCKETBASE = Boolean(import.meta.env.VITE_POCKETBASE_URL?.trim());
 
 export default function App() {
   // Load listings with persistence: if user cleared the data, keep it empty!
@@ -148,24 +151,36 @@ export default function App() {
     sessionStorage.removeItem('car_session_role_v2');
     localStorage.removeItem('car_user_role');
     localStorage.removeItem('car_colleague_unlocked');
-    void fetch('/api/auth/logout', {
-      method: 'POST',
-      credentials: 'same-origin',
-    }).catch(() => undefined);
+    if (USE_POCKETBASE) {
+      pocketbase.authStore.clear();
+    } else {
+      void fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => undefined);
+    }
   }, []);
 
   const handleToggleColleagueLock = useCallback(() => {
     setIsAuthModalOpen(true);
   }, []);
 
-  // A browser tab role is only a UI hint. Restore permissions from the server's
-  // HttpOnly signed session cookie on every page load.
+  // Restore the native PocketBase auth record when the PocketBase backend is selected.
   useEffect(() => {
+    if (USE_POCKETBASE) {
+      const applyRole = (record: { role?: string } | null) => {
+        const role = record?.role;
+        if (role === 'admin' || role === 'colleague') {
+          setUserRole(role);
+          sessionStorage.setItem('car_session_role_v2', role);
+        } else {
+          setUserRole('guest');
+          sessionStorage.removeItem('car_session_role_v2');
+        }
+      };
+      applyRole(pocketbase.authStore.record as { role?: string } | null);
+      const unsubscribe = pocketbase.authStore.onChange((_token, record) => applyRole(record as { role?: string } | null));
+      return () => unsubscribe();
+    }
     let active = true;
-    fetch('/api/auth/session', {
-      credentials: 'same-origin',
-      cache: 'no-store',
-    })
+    fetch('/api/auth/session', { credentials: 'same-origin', cache: 'no-store' })
       .then(async (response) => (response.ok ? response.json() : null))
       .then((session) => {
         if (!active) return;
@@ -182,12 +197,8 @@ export default function App() {
         setUserRole('guest');
         sessionStorage.removeItem('car_session_role_v2');
       });
-
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, []);
-
   // Centralized Data Loader:
   // 1. Immediately renders local cache so UI is instantaneous.
   // 2. Immediately fetches from Liara Server (/api/listings) so EVERY device/phone receives the admin's database.
@@ -195,6 +206,114 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
     let lastSeenServerTimestamp = '';
+    if (USE_POCKETBASE) {
+      let unsubscribeRealtime: (() => Promise<void>) | null = null;
+      let importRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+      let subscriptionQueue: Promise<void> = Promise.resolve();
+      let lastSyncCursor = '';
+      let isRefreshingPocketBase = false;
+      const refreshPocketBase = async () => {
+        if (isRefreshingPocketBase) return;
+        isRefreshingPocketBase = true;
+        try {
+          const fresh = await pocketbaseListings.list();
+          if (!isMounted) return;
+          lastSyncCursor = await pocketbaseListings.getSyncCursor().catch(() => lastSyncCursor);
+          setListings(fresh);
+          setIsOffline(false);
+          setLastSyncTime(new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }));
+        } catch (error) {
+          console.error('PocketBase catalogue load failed:', error);
+          if (typeof navigator !== 'undefined' && !navigator.onLine) setIsOffline(true);
+        } finally {
+          isRefreshingPocketBase = false;
+        }
+      };
+      const handlePocketBaseEvent = async (event: PocketBaseListingEvent) => {
+        if (!isMounted) return;
+        if (event.action === 'delete') {
+          setListings((previous) => previous.filter((item) => String(item.id) !== event.recordId));
+          setSelectedListing((previous) => {
+            if (previous && String(previous.id) === event.recordId) { setIsDetailOpen(false); return null; }
+            return previous;
+          });
+          return;
+        }
+        if (!event.record) return;
+        let liveRecord = event.record;
+        if (pocketbase.authStore.isValid) {
+          if (liveRecord.importBatchName && liveRecord.importBatchName !== 'ثبت‌های دستی همکاران و مدیر') {
+            if (importRefreshTimer) clearTimeout(importRefreshTimer);
+            importRefreshTimer = setTimeout(() => { void refreshPocketBase(); }, 2500);
+          } else {
+            const phoneNumber = await pocketbaseListings.getContactPhone(String(liveRecord.id));
+            if (phoneNumber) liveRecord = { ...liveRecord, phoneNumber };
+          }
+        }
+        if (!isMounted) return;
+        if (liveRecord.status === 'inactive') {
+          setListings((previous) => previous.filter((item) => String(item.id) !== String(liveRecord.id)));
+          return;
+        }
+        setListings((previous) => {
+          const index = previous.findIndex((item) => String(item.id) === String(liveRecord.id));
+          if (index < 0) return [liveRecord as CarListing, ...previous];
+          const next = [...previous];
+          next[index] = { ...next[index], ...liveRecord, phoneNumber: liveRecord.phoneNumber || next[index].phoneNumber };
+          return next;
+        });
+        setSelectedListing((previous) => previous && String(previous.id) === String(liveRecord.id)
+          ? ({ ...previous, ...liveRecord, phoneNumber: liveRecord.phoneNumber || previous.phoneNumber } as CarListing)
+          : previous);
+      };
+      const restartRealtimeSubscription = () => {
+        subscriptionQueue = subscriptionQueue.catch(() => undefined).then(async () => {
+          if (unsubscribeRealtime) {
+            await unsubscribeRealtime();
+            unsubscribeRealtime = null;
+          }
+          if (!isMounted) return;
+          try {
+            unsubscribeRealtime = await pocketbaseListings.subscribe(handlePocketBaseEvent);
+          } catch (error) {
+            console.error('PocketBase realtime subscription failed:', error);
+          }
+        });
+      };
+      void refreshPocketBase();
+      restartRealtimeSubscription();
+      const unsubscribeAuth = pocketbase.authStore.onChange(() => {
+        void refreshPocketBase();
+        restartRealtimeSubscription();
+      });
+      const syncCursorInterval = setInterval(async () => {
+        try {
+          const cursor = await pocketbaseListings.getSyncCursor();
+          if (cursor && cursor !== lastSyncCursor) {
+            lastSyncCursor = cursor;
+            void refreshPocketBase();
+          }
+        } catch {
+          // Realtime remains primary; this cursor is only a reconnect safety net.
+        }
+      }, 30000);
+      const handleOnline = () => { setIsOffline(false); void refreshPocketBase(); };
+      const handleOffline = () => setIsOffline(true);
+      const handleVisible = () => { if (document.visibilityState === 'visible') void refreshPocketBase(); };
+      window.addEventListener('online', handleOnline);
+      window.addEventListener('offline', handleOffline);
+      document.addEventListener('visibilitychange', handleVisible);
+      return () => {
+        isMounted = false;
+        if (unsubscribeRealtime) void unsubscribeRealtime().catch((error) => console.warn('PocketBase realtime cleanup failed:', error));
+        if (importRefreshTimer) clearTimeout(importRefreshTimer);
+        clearInterval(syncCursorInterval);
+        unsubscribeAuth();
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+        document.removeEventListener('visibilitychange', handleVisible);
+      };
+    }
 
     // Step 1: Render local cache immediately
     if (!isStorageExplicitlyCleared()) {
@@ -472,80 +591,85 @@ export default function App() {
   }, []);
 
   // Handle adding new listing from voice or manual entry
-  const handleAddNewListing = useCallback((newListing: CarListing) => {
+  const handleAddNewListing = useCallback(async (newListing: CarListing) => {
     setStorageExplicitlyCleared(false);
-
     const taggedListing: CarListing = {
       ...newListing,
       importBatchName: newListing.importBatchName || 'ثبت‌های دستی همکاران و مدیر',
       importDate: newListing.importDate || new Date().toLocaleDateString('fa-IR'),
     };
-
-    // 1. Optimistic local update
-    setListings((prev) => {
-      const updated = [taggedListing, ...prev.filter((item) => item.id !== taggedListing.id)];
-      saveListingsToIndexedDB(updated);
-      return updated;
-    });
-
-    // 2. Push to Liara Server & Database (if running on Liara)
-    addListingToLiara(taggedListing).catch((err) => {
-      console.warn('Could not sync new ad to Liara server:', err);
-    });
-
-    // 3. Push to Firestore only if NOT on Liara
-    if (typeof window !== 'undefined' && !window.location.hostname.includes('liara.run') && !window.location.hostname.includes('liara.ir')) {
-      addListingToCloud(newListing).catch((err) => {
-        console.warn('Could not sync new ad to cloud:', err);
+    if (USE_POCKETBASE) {
+      try {
+        const saved = await pocketbaseListings.upsert(taggedListing);
+        setListings((previous) => [saved, ...previous.filter((item) => item.id !== saved.id)]);
+      } catch (error) {
+        console.error('PocketBase create failed:', error);
+        window.alert('ثبت آگهی در پایگاه داده انجام نشد. اتصال یا سطح دسترسی حساب را بررسی کنید.');
+        throw error;
+      }
+    } else {
+      setListings((previous) => {
+        const updated = [taggedListing, ...previous.filter((item) => item.id !== taggedListing.id)];
+        saveListingsToIndexedDB(updated);
+        return updated;
       });
+      addListingToLiara(taggedListing).catch((err) => console.warn('Could not sync new ad to Liara server:', err));
+      if (typeof window !== 'undefined' && !window.location.hostname.includes('liara.run') && !window.location.hostname.includes('liara.ir')) {
+        addListingToCloud(newListing).catch((err) => console.warn('Could not sync new ad to cloud:', err));
+      }
     }
-
-    // Switch active tab to match the new listing type
-    setFilters((prev) => ({
-      ...prev,
-      type: newListing.type,
-      searchQuery: '',
-    }));
+    setFilters((previous) => ({ ...previous, type: newListing.type, searchQuery: '' }));
   }, []);
 
-  // Handle in-place editing of an existing listing (updates local state, IndexedDB, and Liara database for all devices)
   const handleUpdateSingleListing = useCallback(async (updatedListing: CarListing) => {
-    const cleanUpdated = sanitizeAndIndexListing({
-      ...updatedListing,
-      isEdited: true,
-    });
-
-    // 1. Immediate optimistic update locally and in IndexedDB
-    setListings((prev) => {
-      const idx = prev.findIndex((item) => item.id === cleanUpdated.id);
-      if (idx === -1) return prev;
-      const next = [...prev];
-      next[idx] = cleanUpdated;
+    const cleanUpdated = sanitizeAndIndexListing({ ...updatedListing, isEdited: true });
+    if (USE_POCKETBASE) {
+      try {
+        const saved = await pocketbaseListings.update(cleanUpdated.id, cleanUpdated);
+        setListings((previous) => previous.map((item) => item.id === saved.id ? saved : item));
+        setSelectedListing((previous) => previous && previous.id === saved.id ? saved : previous);
+      } catch (error) {
+        console.error('PocketBase update failed:', error);
+        window.alert('ذخیره تغییرات در پایگاه داده انجام نشد. لطفاً دوباره تلاش کنید.');
+        throw error;
+      }
+      return;
+    }
+    setListings((previous) => {
+      const index = previous.findIndex((item) => item.id === cleanUpdated.id);
+      if (index < 0) return previous;
+      const next = [...previous];
+      next[index] = cleanUpdated;
       saveListingsToIndexedDB(next);
       return next;
     });
-
-    setSelectedListing((prev) => (prev && prev.id === cleanUpdated.id ? cleanUpdated : prev));
-
-    // 2. Persist to centralized Liara database so all phones receive the update
+    setSelectedListing((previous) => previous && previous.id === cleanUpdated.id ? cleanUpdated : previous);
     await updateListingOnLiara(cleanUpdated);
   }, []);
 
-  // Handle permanent deletion of an existing listing (Server-First authoritative tombstone)
   const handleDeleteSingleListing = useCallback(async (id: string) => {
-    // 1. Optimistic removal locally and in IndexedDB
-    setListings((prev) => {
-      const next = prev.filter((item) => String(item.id) !== String(id));
+    if (USE_POCKETBASE) {
+      try {
+        await pocketbaseListings.remove(id);
+        setListings((previous) => previous.filter((item) => String(item.id) !== String(id)));
+        setSelectedListing((previous) => previous && String(previous.id) === String(id) ? null : previous);
+        setIsDetailOpen(false);
+      } catch (error) {
+        console.error('PocketBase delete failed:', error);
+        window.alert('حذف آگهی از پایگاه داده انجام نشد. لطفاً سطح دسترسی حساب را بررسی کنید.');
+        throw error;
+      }
+      return;
+    }
+    setListings((previous) => {
+      const next = previous.filter((item) => String(item.id) !== String(id));
       saveListingsToIndexedDB(next);
       return next;
     });
-    setSelectedListing((prev) => (prev && String(prev.id) === String(id) ? null : prev));
+    setSelectedListing((previous) => previous && String(previous.id) === String(id) ? null : previous);
     setIsDetailOpen(false);
-
-    // 2. Authoritative deletion on Liara server with tombstone registration
     await deleteListingFromLiara(id);
   }, []);
-
   // Hidden batches state
   const [hiddenBatches, setHiddenBatches] = useState<Set<string>>(() => {
     if (typeof window !== 'undefined') {
@@ -649,6 +773,10 @@ export default function App() {
 
   const handleUpdateListings = useCallback((newListings: CarListing[]) => {
     setListings(newListings);
+    if (USE_POCKETBASE) {
+      setStorageExplicitlyCleared(newListings.length === 0);
+      return;
+    }
     if (newListings.length === 0) {
       clearIndexedDBListings();
       setStorageExplicitlyCleared(true);
@@ -663,6 +791,7 @@ export default function App() {
     if (!incomingListings || incomingListings.length === 0) return;
     setStorageExplicitlyCleared(false);
     setListings((prev) => {
+      if (USE_POCKETBASE) return [...incomingListings, ...prev.filter((item) => !incomingListings.some((incoming) => incoming.id === item.id))];
       const incomingIds = new Set(incomingListings.map((l) => l.id));
       const preserved = prev.filter((p) => !incomingIds.has(p.id));
       const merged = [...incomingListings, ...preserved];
@@ -672,6 +801,10 @@ export default function App() {
   }, []);
 
   const handleRegenerateDemo = useCallback(async () => {
+    if (USE_POCKETBASE) {
+      window.alert('ساخت داده آزمایشی محلی در حالت PocketBase غیرفعال است تا اطلاعات مشترک دست‌کاری نشوند.');
+      return;
+    }
     const raw = generateRealisticCarListings(5000);
     const { prunedListings } = pruneOldListings(raw);
     setStorageExplicitlyCleared(false);

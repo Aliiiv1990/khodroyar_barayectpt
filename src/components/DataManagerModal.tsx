@@ -16,6 +16,8 @@ import { parseSellersJson } from '../utils/sellerDataParser';
 import { clearIndexedDBListings, saveListingsToIndexedDB, setStorageExplicitlyCleared } from '../utils/storage';
 import { publishAdminDatasetToCloud, fetchAdminDatasetFromCloud } from '../utils/cloudSync';
 import { checkCloudConnection } from '../lib/firebase';
+import { pocketbase, pocketbaseListings } from '../lib/pocketbase';
+import { publishListingsToPocketBase } from '../lib/pocketbaseImport';
 import { getListingImage } from '../utils/imageHelper';
 import { buildSearchIndex } from '../utils/persianSearch';
 import {
@@ -169,6 +171,8 @@ const SPEC_SAMPLE_SESSION: SessionJsonRoot = {
   ],
 };
 
+const USE_POCKETBASE = Boolean(import.meta.env.VITE_POCKETBASE_URL?.trim());
+
 export const DataManagerModal: React.FC<DataManagerModalProps> = ({
   isOpen,
   onClose,
@@ -236,23 +240,46 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
   const handleDirectZipUpload = async (file: File) => {
     setIsUploadingZipDirect(true);
     setZipDirectProgress(0);
-    setImportStatus(`در حال آپلود و ذخیره فایل ${file.name} در دیسک دائمی لیارا...`);
+    setImportStatus(USE_POCKETBASE ? `در حال آپلود و ثبت فایل ${file.name} در PocketBase...` : `در حال آپلود و ذخیره فایل ${file.name} در دیسک دائمی لیارا...`);
     setIsSuccess(false);
+
+    let importProgressPoll: ReturnType<typeof setInterval> | null = null;
+    if (USE_POCKETBASE) {
+      importProgressPoll = setInterval(async () => {
+        try {
+          const batch = await pocketbase.collection('import_batches').getFirstListItem(
+            pocketbase.filter('batch_name = {:batchName}', { batchName: file.name }),
+          );
+          const total = Number(batch.record_count || 0);
+          const processed = Number(batch.processed_count || 0);
+          if (total > 0) {
+            const percent = Math.min(99, 95 + Math.floor((processed / total) * 4));
+            setZipDirectProgress(percent);
+            setImportStatus('در حال ثبت تصاویر و رکوردها در PocketBase: ' + toPersianDigits(processed) + ' از ' + toPersianDigits(total));
+          }
+          if (batch.status === 'failed') setImportStatus('بخشی از اطلاعات ثبت نشده؛ همان فایل را دوباره انتخاب کنید تا ادامه یابد.');
+        } catch {
+          // The import batch appears after ZIP validation and extraction begins.
+        }
+      }, 1800);
+    }
 
     try {
       const res = await uploadZipFileToLiara(file, file.name, (p, msg) => {
         setZipDirectProgress(p);
         if (msg) setImportStatus(msg);
-      });
+      }, USE_POCKETBASE ? pocketbase.authStore.token : undefined);
       if (res.success) {
         setIsSuccess(true);
         setImportStatus(res.message);
 
-        // Fetch fresh listings from server so client instantly reflects updated records and images!
-        const refreshed = await fetchListingsFromLiara(20000, true);
+        // Refresh from the selected authoritative backend.
+        const refreshed = USE_POCKETBASE
+          ? await pocketbaseListings.list()
+          : await fetchListingsFromLiara(20000, true);
         if (refreshed && refreshed.length > 0) {
           onUpdateListings(refreshed);
-          await saveListingsToIndexedDB(refreshed);
+          if (!USE_POCKETBASE) await saveListingsToIndexedDB(refreshed);
         }
         await handleCheckLiara();
         await loadBatches();
@@ -264,6 +291,7 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
       setIsSuccess(false);
       setImportStatus(`خطا در آپلود: ${err.message || 'مشکل در ارتباط با سرور'}`);
     } finally {
+      if (importProgressPoll) clearInterval(importProgressPoll);
       setIsUploadingZipDirect(false);
       if (zipDirectFileInputRef.current) zipDirectFileInputRef.current.value = '';
     }
@@ -273,6 +301,26 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     setIsVerifyingIntegrity(true);
     setIntegrityReport(null);
     try {
+      if (USE_POCKETBASE) {
+        const records = await pocketbaseListings.list();
+        const ids = records.map((item) => String(item.id));
+        const uniqueIds = new Set(ids);
+        const batches = records.reduce<Record<string, number>>((result, item) => {
+          const name = item.importBatchName || 'ثبت‌های دستی همکاران و مدیر';
+          result[name] = (result[name] || 0) + 1;
+          return result;
+        }, {});
+        setIntegrityReport({
+          success: uniqueIds.size === records.length && records.every((item) => Boolean(item.title && item.id)),
+          totalListings: records.length,
+          salesCount: records.filter((item) => item.type === 'sale').length,
+          buysCount: records.filter((item) => item.type === 'buy_request').length,
+          revision: Math.max(0, ...records.map((item) => Number(item.revision || 0))),
+          batches,
+          error: uniqueIds.size !== records.length ? 'شناسه تکراری در فهرست مشاهده شد.' : undefined,
+        });
+        return;
+      }
       const res = await verifyServerIntegrity();
       if (res) {
         setIntegrityReport(res);
@@ -290,20 +338,22 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
   const loadBatches = async () => {
     setIsLoadingBatches(true);
     try {
-      const serverBatches = await fetchLiaraBatches();
-      setBatches(serverBatches);
-      const serverHidden = new Set<string>();
-      for (const b of serverBatches) {
-        if (b.isVisible === false) {
-          serverHidden.add(b.batchName);
-        }
-      }
-      setHiddenBatches(serverHidden);
-      if (typeof window !== 'undefined') {
+      if (USE_POCKETBASE) {
+        const serverBatches = await pocketbaseListings.listBatches();
+        setBatches(serverBatches as LiaraBatchInfo[]);
+        const serverHidden = new Set<string>(serverBatches.filter((batch) => !batch.isVisible).map((batch) => batch.batchName));
+        setHiddenBatches(serverHidden);
         localStorage.setItem('car_hidden_batches', JSON.stringify(Array.from(serverHidden)));
+      } else {
+        const serverBatches = await fetchLiaraBatches();
+        setBatches(serverBatches);
+        const serverHidden = new Set<string>();
+        for (const b of serverBatches) if (b.isVisible === false) serverHidden.add(b.batchName);
+        setHiddenBatches(serverHidden);
+        if (typeof window !== 'undefined') localStorage.setItem('car_hidden_batches', JSON.stringify(Array.from(serverHidden)));
       }
     } catch {
-      // ignore
+      // Ignore transient backend errors; the listing view remains usable.
     } finally {
       setIsLoadingBatches(false);
     }
@@ -331,6 +381,12 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
   const handleCheckLiara = async () => {
     setIsCheckingLiara(true);
     try {
+      if (USE_POCKETBASE) {
+        const health = await checkLiaraHealth(8000);
+        if (!health.ok || !health.data || (health.data as any).dbBackend !== 'pocketbase') throw new Error('سرویس PocketBase به برنامه Node متصل نشده است؛ متغیر POCKETBASE_URL را بررسی کنید.');
+        setLiaraHealth(health.data);
+        return;
+      }
       const res = await checkLiaraHealth(6000);
       if (res.ok && res.data) {
         setLiaraHealth(res.data);
@@ -396,6 +452,13 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     }
 
     try {
+      if (USE_POCKETBASE) {
+        await pocketbaseListings.setBatchVisibility(batchName, newIsVisible);
+        setImportStatus(newIsVisible ? 'بسته «' + batchName + '» در PocketBase فعال شد.' : 'بسته «' + batchName + '» در PocketBase مخفی شد.');
+        setIsSuccess(true);
+        await loadBatches();
+        return;
+      }
       const res = await setLiaraBatchVisibility(batchName, newIsVisible);
       setImportStatus(
         newIsVisible
@@ -419,6 +482,13 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
       window.dispatchEvent(new Event('storage'));
     }
     try {
+      if (USE_POCKETBASE) {
+        await Promise.all(allBatchNames.map((name) => pocketbaseListings.setBatchVisibility(name, true)));
+        setImportStatus('تمامی بسته‌ها در PocketBase فعال شدند.');
+        setIsSuccess(true);
+        await loadBatches();
+        return;
+      }
       await setMultipleLiaraBatchesVisibility(allBatchNames, true);
       setImportStatus('تمامی فایل‌ها و بسته‌ها فعال شدند و در برنامه نمایش داده می‌شوند.');
       setIsSuccess(true);
@@ -438,6 +508,13 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
       window.dispatchEvent(new Event('storage'));
     }
     try {
+      if (USE_POCKETBASE) {
+        await Promise.all(allBatchNames.map((name) => pocketbaseListings.setBatchVisibility(name, false)));
+        setImportStatus('تمامی بسته‌ها در PocketBase مخفی شدند؛ اطلاعات حذف نشده‌اند.');
+        setIsSuccess(true);
+        await loadBatches();
+        return;
+      }
       await setMultipleLiaraBatchesVisibility(allBatchNames, false);
       setImportStatus('تمامی فایل‌ها موقتاً مخفی شدند (داده‌ها در سرور محفوظ است).');
       setIsSuccess(true);
@@ -454,6 +531,17 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     setImportStatus(`در حال حذف دائم بسته «${batchName}» از سرور لیارا و این دستگاه...`);
 
     try {
+      if (USE_POCKETBASE) {
+        await pocketbaseListings.deleteBatch(batchName);
+        const remainingListings = await pocketbaseListings.list();
+        onUpdateListings(remainingListings);
+        setHiddenBatches((previous) => { const next = new Set(previous); next.delete(batchName); return next; });
+        setImportStatus('بسته «' + batchName + '» به‌طور دائم از PocketBase حذف شد.');
+        setIsSuccess(true);
+        await handleCheckLiara();
+        await loadBatches();
+        return;
+      }
       const res = await deleteLiaraBatches({ batchName });
 
       const remainingListings = listings.filter((l) => (l.importBatchName || 'ثبت‌های دستی همکاران و مدیر') !== batchName);
@@ -492,11 +580,30 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     setIsPublishingLiara(true);
     setPublishingBatchName(targetTitle);
     setPublishProgress(0);
-    setImportStatus(`در حال ارسال «${targetTitle}» (${toPersianDigits(targetListings.length)} خودرو) به سرور لیارا (بدون حذف فایل‌های قبلی)...`);
+    setImportStatus(USE_POCKETBASE ? `در حال ثبت «${targetTitle}» (${toPersianDigits(targetListings.length)} خودرو) در PocketBase...` : `در حال ارسال «${targetTitle}» (${toPersianDigits(targetListings.length)} خودرو) به سرور لیارا (بدون حذف فایل‌های قبلی)...`);
     if (typeof window !== 'undefined') {
       (window as any).__isSyncingToLiara = true;
     }
     try {
+      if (USE_POCKETBASE) {
+        const result = await publishListingsToPocketBase(targetListings, targetTitle, (progress) => {
+          setPublishProgress(progress.percent);
+          setImportStatus('در حال ثبت در PocketBase: ' + toPersianDigits(progress.processed) + ' از ' + toPersianDigits(progress.total) + ' رکورد (' + toPersianDigits(progress.percent) + '٪)');
+        }, targetTitle);
+        const refreshed = await pocketbaseListings.list();
+        onUpdateListings(refreshed);
+        if (result.failed > 0) {
+          setImportStatus('ثبت کامل نشد: ' + toPersianDigits(result.saved) + ' موفق و ' + toPersianDigits(result.failed) + ' ناموفق. جزئیات در سوابق بسته ثبت شده است.');
+          setIsSuccess(false);
+        } else {
+          setImportStatus('ثبت در PocketBase کامل شد: ' + toPersianDigits(result.saved) + ' رکورد در بسته «' + targetTitle + '».');
+          setIsSuccess(true);
+        }
+        if (result.failed === 0 && newlyImportedBatch && targetTitle === newlyImportedBatch.batchName) setNewlyImportedBatch(null);
+        await handleCheckLiara();
+        await loadBatches();
+        return;
+      }
       const res = await publishListingsToLiara(
         targetListings,
         true, // Safe append/merge mode! Never wipe previous batches
@@ -544,6 +651,14 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
     setIsFetchingLiara(true);
     setImportStatus('در حال دریافت آخرین نسخه بانک اطلاعاتی از دیتابیس سرور لیارا...');
     try {
+      if (USE_POCKETBASE) {
+        const serverListings = await pocketbaseListings.list();
+        onUpdateListings(serverListings);
+        setImportStatus('بانک اطلاعات PocketBase (' + toPersianDigits(serverListings.length) + ' رکورد) دریافت شد.');
+        setIsSuccess(true);
+        await handleCheckLiara();
+        return;
+      }
       const serverListings = await fetchListingsFromLiara();
       if (serverListings && serverListings.length > 0) {
         const { prunedListings } = pruneOldListings(serverListings);
@@ -609,6 +724,11 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
   // Cloud Publish handler (Admin uploads daily data for all users)
   const handlePublishToCloud = async () => {
+    if (USE_POCKETBASE) {
+      setImportStatus('ارسال به Firebase در حالت PocketBase غیرفعال است تا دو پایگاه داده از هم جدا و متناقض نشوند.');
+      setIsSuccess(false);
+      return;
+    }
     if (listings.length === 0) {
       setImportStatus('ابتدا باید دیتایی وارد سامانه شده باشد تا روی ابر منتشر شود.');
       setIsSuccess(false);
@@ -643,6 +763,11 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
   // Cloud Fetch handler (Fetch latest admin dataset)
   const handleFetchFromCloud = async () => {
+    if (USE_POCKETBASE) {
+      setImportStatus('همگام‌سازی Firebase در حالت PocketBase غیرفعال است؛ منبع اصلی داده‌ها PocketBase است.');
+      setIsSuccess(false);
+      return;
+    }
     setIsFetchingCloud(true);
     setPublishProgress(0);
     setImportStatus('در حال بررسی و بارگیری آخرین نسخه بانک اطلاعاتی از فضای ابری...');
@@ -676,6 +801,11 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
   // Export full backup with images for Telegram, Bale, Eitaa, etc. (No VPN needed)
   const handleExportFullBackup = () => {
+    if (USE_POCKETBASE) {
+      setImportStatus('پشتیبان کامل PocketBase باید از پنل مدیر PocketBase و بخش Settings → Backups ساخته شود تا دیتابیس و فایل‌های عکس با هم ذخیره شوند. خروجی JSON این صفحه جایگزین پشتیبان کامل نیست.');
+      setIsSuccess(false);
+      return;
+    }
     if (listings.length === 0) {
       setImportStatus('ابتدا باید داده‌ای در برنامه وجود داشته باشد تا فایل پشتیبان ساخته شود.');
       setIsSuccess(false);
@@ -731,6 +861,22 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
   // Clear all listings (both locally and on Liara server)
   const handleConfirmClearAll = async () => {
+    if (USE_POCKETBASE) {
+      try {
+        const removed = await pocketbaseListings.clearAll();
+        setStorageExplicitlyCleared(true);
+        onUpdateListings([]);
+        setShowClearConfirm(false);
+        setImportStatus('تمامی ' + toPersianDigits(removed) + ' رکورد و فایل‌های وابسته از PocketBase حذف شدند.');
+        setIsSuccess(true);
+        await handleCheckLiara();
+        await loadBatches();
+      } catch (error: any) {
+        setImportStatus('پاکسازی کامل انجام نشد: ' + (error?.message || 'خطای سرور'));
+        setIsSuccess(false);
+      }
+      return;
+    }
     await clearIndexedDBListings();
     setStorageExplicitlyCleared(true);
     onUpdateListings([]);
@@ -749,6 +895,16 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
 
   const handlePruneNow = async () => {
     const { prunedListings, removedCount } = pruneOldListings(listings);
+    if (USE_POCKETBASE) {
+      const keepIds = new Set(prunedListings.map((item) => String(item.id)));
+      const expired = listings.filter((item) => !keepIds.has(String(item.id)));
+      for (const item of expired) await pocketbaseListings.remove(String(item.id));
+      onUpdateListings(prunedListings);
+      setImportStatus('پاکسازی انجام شد؛ ' + toPersianDigits(removedCount) + ' آگهی قدیمی از PocketBase حذف شد.');
+      setIsSuccess(true);
+      await loadBatches();
+      return;
+    }
     await saveListingsToIndexedDB(prunedListings);
     onUpdateListings(prunedListings);
     setImportStatus(
@@ -758,6 +914,11 @@ export const DataManagerModal: React.FC<DataManagerModalProps> = ({
   };
 
   const handleRegenerate5000 = async () => {
+    if (USE_POCKETBASE) {
+      setImportStatus('ساخت داده آزمایشی محلی در حالت PocketBase غیرفعال است تا اطلاعات واقعی مخلوط نشوند.');
+      setIsSuccess(false);
+      return;
+    }
     const fresh = generateRealisticCarListings(5000);
     const { prunedListings } = pruneOldListings(fresh);
     setStorageExplicitlyCleared(false);
