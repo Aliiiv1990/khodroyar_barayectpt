@@ -73,8 +73,8 @@ migrate((app) => {
     type: "base",
     listRule: '@request.auth.id != ""',
     viewRule: '@request.auth.id != ""',
-    createRule: '@request.auth.role = "admin" || owner_id = @request.auth.id',
-    updateRule: '(@request.auth.role = "admin" || owner_id = @request.auth.id) && @request.body.owner_id = owner_id',
+    createRule: '@request.auth.id != "" && @request.body.owner_id = @request.auth.id',
+    updateRule: '@request.auth.id != "" && @request.body.owner_id = owner_id',
     deleteRule: '@request.auth.role = "admin" || owner_id = @request.auth.id',
     fields: [
       { name: "listing_id", type: "text", required: true, max: 160 },
