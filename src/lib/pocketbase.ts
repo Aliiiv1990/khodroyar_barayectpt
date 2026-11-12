@@ -386,7 +386,7 @@ export const pocketbaseListings = {
     const worker = async () => {
       while (cursor < records.length) {
         const index = cursor++;
-        await this.remove(String(records[index].legacy_id || records[index].id));
+        await this.remove(String(records[index].legacy_id || records[index].id), false);
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, records.length) }, () => worker()));
