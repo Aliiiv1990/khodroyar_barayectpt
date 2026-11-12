@@ -14,6 +14,7 @@ WORKDIR /pb
 COPY pb_migrations /pb/pb_migrations
 RUN mkdir -p /pb/pb_data
 EXPOSE 8090
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD wget -q -O /dev/null http://127.0.0.1:8090/api/health || exit 1
 VOLUME ["/pb/pb_data"]
 ENV POCKETBASE_ALLOWED_ORIGINS=https://carplus.liara.run
 CMD ["/bin/sh", "-c", "exec /pb/pocketbase serve --http=0.0.0.0:8090 --origins=${POCKETBASE_ALLOWED_ORIGINS}"]
