@@ -159,6 +159,18 @@ app.use('/api', (req, res, next) => {
     return next();
   }
 
+  // In PocketBase mode these ZIP endpoints verify the Bearer token against the
+  // PocketBase users collection in each handler; do not require the legacy PIN cookie.
+  if (process.env.POCKETBASE_URL && (
+    pathName === '/admin/upload-chunk/init' ||
+    pathName === '/admin/upload-chunk' ||
+    pathName.startsWith('/admin/upload-chunk/status/') ||
+    pathName === '/admin/upload-chunk/finalize' ||
+    pathName === '/admin/upload-zip'
+  )) {
+    return next();
+  }
+
   // Keep local development usable without exposing insecure built-in PINs.
   if (!isProd && !isAuthConfigured()) return next();
   if (!isAuthConfigured()) {
