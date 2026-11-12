@@ -5,7 +5,7 @@ import { optimizeImageForUpload } from '../utils/imageHelper';
 
 const configuredUrl = import.meta.env.VITE_POCKETBASE_URL?.trim();
 if (!configuredUrl && import.meta.env.PROD) {
-  console.warn('[PocketBase] VITE_POCKETBASE_URL is not configured.');
+  throw new Error('[PocketBase] Production build is missing VITE_POCKETBASE_URL. Configure the public PocketBase URL before deploying.');
 }
 
 export const pocketbase = new PocketBase(configuredUrl || 'http://127.0.0.1:8090');
