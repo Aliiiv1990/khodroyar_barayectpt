@@ -1,50 +1,67 @@
-> **Implementation status (2026-11-11):** Work is isolated on `feat/pocketbase-core`. The existing React UI now has a PocketBase-backed authentication path, listing read/create/update/delete, private contact records, revision checks, immutable audit entries, realtime listing updates, batch visibility/deletion, and a resumable ZIP import path that extracts archive entries from disk and stores photos in PocketBase. A separate PocketBase service Dockerfile and Liara setup guide are included. This remains staging work: the current Node application lint, 44 automated tests, and production build pass in GitHub Actions. A separate Docker-image build check is now included in CI. No live PocketBase service, real ZIP import, multi-device realtime session, or restore test has been run yet. Full backup/restore UX and operational monitoring remain to be completed.
-
-
 # Khodroyar — PocketBase Core Migration
 
-## Non-negotiable product constraint
-Keep the current React interface and its visual language intact. The migration changes the data/auth/file/realtime services behind existing screens; it is not a UI redesign.
+> **Status (2026-11-12):** Implementation is isolated on `feat/pocketbase-core` and the draft PR #2. The existing React interface and its visual design are retained. GitHub Actions currently passes TypeScript lint, all 44 automated tests, the production Node/Vite build, and a Docker build of the standalone PocketBase service. No live PocketBase instance has been deployed and no real archive, multi-device, or backup-restore acceptance test has been performed. This is a staging candidate, not a production cutover.
 
-## Current architecture discovered
+## Product constraint
+
+Keep the existing React interface, screens, workflows, and visual language. Replace the persistence/auth/file/realtime foundation behind the current components; do not redesign the UI.
+
+## Existing application
+
 - React + TypeScript + Vite frontend.
-- Existing screen components include HeaderAndTabs, SearchBarAndFilters, VirtualCarList, CarCard, CarDetailModal, NewListingModal, ColleagueAuthModal, DataManagerModal, and SettingsModal.
-- The current app mixes IndexedDB cache, Liara Express endpoints, Firebase compatibility code, JSON/PostgreSQL server storage, and periodic polling/SSE.
-- The existing listing model is in src/types/car.ts and contains sale/buy_request, Persian search metadata, import batch metadata, and image metadata.
+- Existing screens include HeaderAndTabs, SearchBarAndFilters, VirtualCarList, CarCard, CarDetailModal, NewListingModal, ColleagueAuthModal, DataManagerModal, and SettingsModal.
+- The listing view model remains `CarListing`. A typed PocketBase repository adapter maps records into that existing shape so most UI components do not depend on PocketBase record structures.
+- The PocketBase path is enabled at build time with `VITE_POCKETBASE_URL`; the Node service uses the private/runtime `POCKETBASE_URL`. The old backend path remains available until staging acceptance and deliberate cutover.
 
 ## Target architecture
-- PocketBase is the single source of truth for records, native auth, file attachments, and realtime events.
-- React components continue to consume the existing CarListing view model. A repository/service adapter translates PocketBase records to/from CarListing so UI components do not become coupled to PocketBase record shapes.
-- PocketBase runs as a separate persistent service with its own durable data directory on Liara. Its data directory must be mounted to persistent storage and backed up.
-- The frontend uses the PocketBase SDK via VITE_POCKETBASE_URL. Never put a PocketBase superuser credential in VITE_* variables or browser code.
-- Public users may read active listings; authenticated colleagues may create/update listings; destructive bulk actions and imports are admin-only. Enforce these rules in PocketBase collection API rules, not only in React.
-- Photo uploads use PocketBase file fields. Store file names/metadata in records; do not embed base64 images in JSON records.
-- Subscribe to listings and import-batch changes using PocketBase realtime; unsubscribe on component/app teardown. Realtime events trigger targeted record updates, with a full refresh fallback on reconnect.
-- Keep IndexedDB only as an optional read cache. It is never authoritative and must not resurrect records deleted remotely.
 
-## Collections
-1. users (auth): role (admin/colleague), display_name, enabled.
-2. listings: fields corresponding to CarListing, including type, title, brand, model, year, price, mileage, city, phone, description, source, creator, import_batch, import_date, revision, is_active, photos (multiple files).
-3. import_batches: name, imported_at, imported_by, record_count, status, source_file, notes.
-4. audit_logs: actor, action, collection_name, record_id, occurred_at, summary. No PINs, passwords, auth tokens, or secrets in logs.
+- PocketBase is the authoritative store for listings, user accounts, private contact details, photo files, and realtime record events.
+- PocketBase runs as a separate Liara Docker service. It must have its own persistent disk mounted at `/pb/pb_data`; never mount the old Node app's disk as the PocketBase data directory.
+- The existing Node service remains a trusted ZIP extraction/streaming worker. It validates the signed-in PocketBase administrator token and streams extracted image files into PocketBase. It is not the source of truth for listings.
+- The frontend uses the official PocketBase JavaScript SDK. No superuser password, API key, or other service credential is placed in a `VITE_*` variable or browser code.
+- Public visitors can read active listings. Authenticated colleagues can read all listings and contact details, create records, and update records. A listing can be deleted by its owner or an admin; bulk imports, batch visibility/deletion, and administrative operations require an admin.
+- Phone numbers are stored separately in `listing_contacts`, not in public listing records. The UI receives them only after authentication.
+- Photos are stored as PocketBase file attachments with generated 640×480 thumbnails. Listing records contain file metadata/URLs, not base64 image blobs.
+- Revision checks reject stale edits instead of silently overwriting newer changes. Stable `legacy_id` values make imports idempotent.
+- PocketBase realtime subscriptions update the existing UI immediately after record changes. Reconnect, browser visibility, and online events trigger a fresh catalogue read as a recovery path.
+- IndexedDB may be used as a non-authoritative read cache only. It must never resurrect a remotely deleted listing.
 
-## Migration phases
-- Phase 0 — isolate work on feat/pocketbase-core; do not alter main or deploy over the current live app.
-- Phase 1 — establish PocketBase collections, rules, SDK client, health diagnostics, and backup/restore instructions.
-- Phase 2 — implement a typed repository adapter and move read/list/search/detail operations to PocketBase while preserving current components.
-- Phase 3 — move create/edit/delete and image uploads to PocketBase; verify deletion is immediately reflected on every device.
-- Phase 4 — replace polling/SSE with PocketBase realtime subscriptions and reconnect handling.
-- Phase 5 — migrate the current PIN-based entry UX to native PocketBase accounts/roles without exposing service credentials; retain the existing modal styling.
-- Phase 6 — implement ZIP import as a resumable, validated batch pipeline with progress, duplicate detection, rollback/cleanup, and image upload retries.
-- Phase 7 — test with 7–8k listings and ~10k photos, verify search latency, upload reliability, access rules, backup restore, and two-device concurrency.
-- Phase 8 — only after acceptance, deploy PocketBase separately, point a staging frontend to it, and then switch the live app. Keep rollback path until verified.
+## Collections and key rules
 
-## Data integrity and operations
-- Never delete or overwrite the current Liara app/database during development.
-- Use stable IDs and server-side revision/timestamps. Resolve concurrent edits with explicit revision checks; do not silently overwrite newer records.
-- Bulk import must be idempotent by stable source ID/hash and batch ID.
-- Deletion is server-authoritative. Local cache is updated only after server confirmation; realtime propagates the change.
-- Use paginated queries and indexed fields for type, brand, model, city, created_at, import_batch, and active status. Avoid loading all full-size photos with listing pages.
-- Set upload size limits based on actual photo archives and Liara disk capacity. Confirm persistent volume size before importing all images.
-- Back up PocketBase data and files together; test restore before production cutover.
-- Use HTTPS, strong unique admin credentials, least-privilege API rules, rate limits where supported, and never commit secrets.
+1. **users** (auth): email/password login, `role` (admin/colleague), `display_name`, `enabled`. The first PocketBase superuser is separate from app users.
+2. **listings**: existing CarListing fields, stable `legacy_id`, `created_by`, `revision`, `is_active`, import metadata, and multiple `photos` files. Indexed by stable ID, type/active/created, brand/model, city, and import batch.
+3. **listing_contacts**: listing ID, phone number, and immutable owner ID. Read access requires authentication; writes/deletes are restricted to the owner or admin.
+4. **import_batches**: batch name, status, counts, source file, and error summary. Administrative access only.
+5. **audit_logs**: actor, action, collection, record/batch ID, and summary. App-level entries are immutable; secrets and credentials are never logged.
+
+## Implemented on the feature branch
+
+- PocketBase SDK client and typed `CarListing` adapter.
+- Native account login in the existing authentication modal, retaining the modal layout.
+- Listing pagination, mapping, create/edit/delete, private contact lookup, file upload, and revision checks.
+- Admin batch visibility and permanent deletion through PocketBase.
+- Realtime listing subscription and UI refresh/reconnect handling.
+- Audit entries for listing changes, batch actions, and ZIP imports.
+- Resumable 1.5 MB ZIP upload chunks, disk-based archive extraction, image validation, and PocketBase file uploads.
+- Separate PocketBase Dockerfile, Liara setup guide, and persistent-volume/backup instructions.
+- Health endpoint reports `dbBackend: pocketbase` only when the Node service can reach the configured PocketBase service.
+
+## Remaining acceptance work
+
+1. Deploy a **separate staging PocketBase service** with a persistent disk and create admin/colleague accounts. Do not replace the current `carplus` app.
+2. Configure `POCKETBASE_URL` on the Node service and `VITE_POCKETBASE_URL` at frontend build time; verify the health endpoint reports PocketBase.
+3. Test login and role restrictions for one admin and at least two colleagues.
+4. Test create/edit/delete from two separate devices and verify realtime propagation, including permanent deletion.
+5. Import a representative ZIP first, reconcile source records vs imported records, verify images and phone numbers, then test the full 7–8k-record / ~10k-photo archive.
+6. Test interrupted upload resume, duplicate re-import, failed-record reporting, and cleanup of staging files. Add an explicit batch rollback workflow before production if partial-import rollback is required.
+7. Verify search speed and browser memory with the full catalogue.
+8. Configure off-service PocketBase backups and restore a backup into a separate staging instance, checking both SQLite records and `pb_data/storage` files.
+9. Only after all acceptance checks pass, approve the PR and perform a controlled production cutover. Keep the previous app/database and rollback path until the new deployment is verified.
+
+## Storage and operations
+
+- The Node staging disk needs temporary space for the uploaded ZIP plus extracted files. The import checks available space before extraction.
+- The PocketBase persistent disk stores the SQLite database, original photos, and thumbnails. Size it from the actual archive size and average image size, with headroom for growth and temporary backup operations. Do not upload the full photo archive until the disk is large enough.
+- Back up the database and uploaded files together. A backup stored only on the same disk does not protect against disk/account loss.
+- PocketBase is pre-1.0; review release notes and test upgrades/restores before updating the pinned server/SDK versions.
+- Keep HTTPS enabled, use unique strong passwords, apply least privilege, and never commit secrets.
