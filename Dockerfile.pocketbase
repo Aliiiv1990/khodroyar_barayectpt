@@ -1,6 +1,6 @@
 # Standalone PocketBase service for Liara.
 # Deploy as a separate service; never replace the existing Node app.
-ARG POCKETBASE_VERSION=0.42.1
+ARG POCKETBASE_VERSION=0.42.2
 ARG TARGETARCH=amd64
 FROM alpine:3.23
 ARG POCKETBASE_VERSION
