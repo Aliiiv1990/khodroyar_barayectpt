@@ -1,16 +1,16 @@
 # Standalone PocketBase service for Liara.
-# Deploy this file as the Dockerfile for a separate service; do not replace the Node app.
+# Deploy as a separate service; never replace the existing Node app.
 ARG POCKETBASE_VERSION=0.42.1
-FROM golang:1.27-alpine AS pocketbase-build
-RUN apk add --no-cache git ca-certificates
-ARG POCKETBASE_VERSION
-ENV CGO_ENABLED=0
-RUN go install "ganigeorgiev.com/pocketbase/pocketbase/examples/base@v${POCKETBASE_VERSION}"
-
+ARG TARGETARCH=amd64
 FROM alpine:3.23
-RUN apk add --no-cache ca-certificates
+ARG POCKETBASE_VERSION
+ARG TARGETARCH
+RUN apk add --no-cache ca-certificates unzip wget \
+  && wget -O /tmp/pocketbase.zip "https://ganigeorgiev.com/meta/pocketbase/pocketbase/download/v${POCKETBASE_VERSION}/pocketbase_${POCKETBASE_VERSION}_linux_${TARGETARCH}.zip" \
+  && unzip /tmp/pocketbase.zip -d /pb \
+  && rm /tmp/pocketbase.zip \
+  && chmod +x /pb/pocketbase
 WORKDIR /pb
-COPY --from=pocketbase-build /go/bin/base /pb/pocketbase
 COPY pb_migrations /pb/pb_migrations
 RUN mkdir -p /pb/pb_data
 EXPOSE 8090
