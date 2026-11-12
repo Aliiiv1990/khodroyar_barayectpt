@@ -694,6 +694,9 @@ async function persistPostgresSnapshot(client: PoolClient): Promise<void> {
 }
 
 async function initializePostgresStore(): Promise<void> {
+  if (isProd && !String(process.env.POCKETBASE_URL || '').trim()) {
+    throw new Error('PocketBase is the only supported production database. Configure POCKETBASE_URL before deployment.');
+  }
   if (process.env.POCKETBASE_URL) {
     if (isProd && !fs.existsSync('/data')) {
       throw new Error('PocketBase import processing requires the Node app persistent disk mounted at /data.');
