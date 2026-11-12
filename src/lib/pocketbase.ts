@@ -243,7 +243,7 @@ export const pocketbaseListings = {
         if (error?.status !== 404) throw error;
       }
       if (contact) {
-        await pocketbase.collection('listing_contacts').update(contact.id, { phone_number: listing.phoneNumber });
+        await pocketbase.collection('listing_contacts').update(contact.id, { phone_number: listing.phoneNumber, owner_id: String(contact.owner_id || '') });
       } else if (listing.phoneNumber) {
         await pocketbase.collection('listing_contacts').create({ listing_id: recordId, phone_number: listing.phoneNumber, owner_id: String(pocketbase.authStore.record?.id || '') });
       }
