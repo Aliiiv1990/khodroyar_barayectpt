@@ -1,6 +1,6 @@
 import type { CarListing } from '../types/car';
 import { pocketbase, pocketbaseListings } from './pocketbase';
-import { optimizeImageForUpload } from './imageHelper';
+import { optimizeImageForUpload } from '../utils/imageHelper';
 
 export interface PocketBaseImportProgress {
   processed: number;
