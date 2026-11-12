@@ -807,7 +807,7 @@ export async function uploadZipFileToLiara(
     return 'خطای سرور (کد ' + status + ')';
   };
 
-  const authorizationHeaders = authToken ? { Authorization: 'Bearer ' + authToken } : {};
+  const authorizationHeaders: Record<string, string> = authToken ? { Authorization: 'Bearer ' + authToken } : {};
   onProgress?.(1, 'در حال اتصال به سرور و آماده‌سازی آپلود...');
   const initController = new AbortController();
   const initTimer = setTimeout(() => initController.abort(), 30000);
