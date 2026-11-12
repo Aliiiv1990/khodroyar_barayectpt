@@ -2288,8 +2288,9 @@ app.post(
 );
 
 // 3. GET /api/admin/upload-chunk/status/:uploadId: Returns resume status
-app.get('/api/admin/upload-chunk/status/:uploadId', (req, res) => {
+app.get('/api/admin/upload-chunk/status/:uploadId', async (req, res) => {
   try {
+    if (process.env.POCKETBASE_URL) await verifyPocketBaseAdminToken(String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim());
     const uploadId = String(req.params.uploadId || '').trim();
     const uploadsDir = getUploadsDir();
     const sessionDir = path.join(uploadsDir, uploadId);
