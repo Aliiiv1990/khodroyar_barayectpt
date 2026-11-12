@@ -20,7 +20,7 @@ This branch is a migration workspace. It does not change the live Liara app.
 - The PocketBase JavaScript SDK 0.28.2, typed listing adapter, native account login, listing CRUD, private contact storage, and realtime listing updates are wired behind `VITE_POCKETBASE_URL`.
 - The admin data manager routes batch visibility, deletion, integrity checks, and ZIP imports to PocketBase when that setting is present.
 - ZIP import uses the Node service as an authenticated streaming extraction worker; listing records and photos are stored in PocketBase.
-- The UI and Liara integration have not yet passed a complete CI run or a real staging import. Do not switch the live app until CI, authentication, realtime, backup/restore, and a representative ZIP import have been verified.
+- The current feature-branch CI passes TypeScript lint, all 44 automated tests, the production Vite/Node build, and a Docker image build for PocketBase 0.42.2. This verifies compilation and packaging only. No live PocketBase instance has been deployed, and authentication, realtime, backup/restore, and a representative ZIP import still require real staging acceptance. Do not switch the live app until those checks pass.
 
 
 ## ZIP import and disk sizing
