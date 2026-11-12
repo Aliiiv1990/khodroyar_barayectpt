@@ -30,7 +30,7 @@ Keep the existing React interface, screens, workflows, and visual language. Repl
 
 1. **users** (auth): email/password login, `role` (admin/colleague), `display_name`, `enabled`. The first PocketBase superuser is separate from app users.
 2. **listings**: existing CarListing fields, stable `legacy_id`, `created_by`, `revision`, `is_active`, import metadata, and multiple `photos` files. Indexed by stable ID, type/active/created, brand/model, city, and import batch.
-3. **listing_contacts**: listing ID, phone number, and immutable owner ID. Read access requires authentication; writes/deletes are restricted to the owner or admin.
+3. **listing_contacts**: listing ID, phone number, and immutable owner ID. Read access requires authentication; any authenticated colleague can update the shared phone number while the original owner ID remains immutable; deletion is restricted to the owner or admin.
 4. **import_batches**: batch name, status, counts, source file, and error summary. Administrative access only.
 5. **audit_logs**: actor, action, collection, record/batch ID, and summary. App-level entries are immutable; secrets and credentials are never logged.
 
