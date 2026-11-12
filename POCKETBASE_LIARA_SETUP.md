@@ -3,17 +3,22 @@
 This branch is a migration workspace. It does not change the live Liara app.
 
 ## Required infrastructure
-1. Create a separate Liara service for PocketBase using `Dockerfile.pocketbase` from this repository; do not replace the existing `carplus` Node app.
-2. Attach a persistent disk to the PocketBase service and mount it at `/pb/pb_data`.
-3. Publish PocketBase over HTTPS and set the PocketBase service environment variable `POCKETBASE_ALLOWED_ORIGINS` to the exact browser app origin (default in the Dockerfile: `https://carplus.liara.run`). If you use a custom domain, update this value. The Dockerfile passes it to PocketBase's `--origins` flag.
-4. Keep a separate backup of the PocketBase data directory and uploaded files. The Node app's `/data` staging disk is separate from this PocketBase disk.
+
+1. In Liara, create a **new Docker app** with the app ID `khodroyar-pocketbase`. Do not replace or redeploy over the existing `carplus` Node app.
+2. Select the **same private network** used by `carplus` (the existing network in this account is `network-ndmwedl8xr`).
+3. Deploy the GitHub branch `deploy/pocketbase-liara`. This is a dedicated deployment branch with a root-level `Dockerfile` and a Docker-specific `liara.json`; do not use the Node app branch as the PocketBase service source.
+4. Create a persistent disk named `pbdata` for this new app. The branch's `liara.json` attaches it at `/pb/pb_data`. This path stores both SQLite data and uploaded photos.
+5. Expose the service on port `8090` over HTTPS. The Docker image allows the existing browser app origin `https://carplus.liara.run` by default through `POCKETBASE_ALLOWED_ORIGINS`. If the app uses a different domain, set that exact origin in the PocketBase service's environment settings.
+6. Keep an off-service backup of the PocketBase data directory and uploaded files. The Node app's `/data` staging disk is separate from the PocketBase `pbdata` disk.
+
+Liara's private-network rule is important: both apps must share the same private network, and the internal app ID is used as the hostname. The Node worker therefore reaches PocketBase at `http://khodroyar-pocketbase:8090`.
 
 ## Initial setup
 1. Deploy `Dockerfile.pocketbase` as a separate Docker service. It downloads the official PocketBase 0.42.2 Linux release binary from the maintainer's official host and copies the `pb_migrations/` directory; PocketBase applies pending migrations automatically on startup.
 2. Create the first PocketBase superuser through the Liara console using `/pb/pocketbase superuser create admin@example.com 'REPLACE_WITH_A_STRONG_PASSWORD'` (replace both placeholders; do not commit the password).
 3. Open the PocketBase dashboard and create one record in the `users` auth collection for each person. Set `display_name`, `role` (`admin` or `colleague`), `enabled=true`, a unique email, and a strong password.
-4. Set frontend build variable `VITE_POCKETBASE_URL` to the HTTPS PocketBase base URL. This is a public API base URL, not a secret.
-5. Set Node runtime variable `POCKETBASE_URL` to the PocketBase private-network URL reachable from the `carplus` Node app (or the HTTPS URL if private networking is not configured). The server validates the signed-in administrator's PocketBase token for ZIP imports; it does not need a PocketBase superuser password.
+4. Before deploying the Node branch, set `VITE_POCKETBASE_URL=https://khodroyar-pocketbase.liara.run` on `carplus`. This value is embedded into the browser bundle at build time, so it must be configured before the Node app is built/deployed. It is a public API URL, not a secret.
+5. Set `POCKETBASE_URL=http://khodroyar-pocketbase:8090` as a runtime variable on `carplus`. This is the private-network address used by the Node ZIP worker. The worker validates the signed-in administrator's PocketBase token; it does not need a PocketBase superuser password.
 6. Never put a PocketBase superuser email/password or API key into a `VITE_*` variable or commit it to Git.
 
 ## Current code status
