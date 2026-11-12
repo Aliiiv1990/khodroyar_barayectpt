@@ -17,7 +17,7 @@ This branch is a migration workspace. It does not change the live Liara app.
 6. Never put a PocketBase superuser email/password or API key into a `VITE_*` variable or commit it to Git.
 
 ## Current code status
-- The PocketBase JavaScript SDK 0.28.1, typed listing adapter, native account login, listing CRUD, private contact storage, and realtime listing updates are wired behind `VITE_POCKETBASE_URL`.
+- The PocketBase JavaScript SDK 0.28.2, typed listing adapter, native account login, listing CRUD, private contact storage, and realtime listing updates are wired behind `VITE_POCKETBASE_URL`.
 - The admin data manager routes batch visibility, deletion, integrity checks, and ZIP imports to PocketBase when that setting is present.
 - ZIP import uses the Node service as an authenticated streaming extraction worker; listing records and photos are stored in PocketBase.
 - The UI and Liara integration have not yet passed a complete CI run or a real staging import. Do not switch the live app until CI, authentication, realtime, backup/restore, and a representative ZIP import have been verified.
@@ -33,7 +33,7 @@ This branch is a migration workspace. It does not change the live Liara app.
 
 
 ## Version and upgrade policy
-- This branch pins the PocketBase server to 0.42.2 and the official JavaScript SDK to 0.28.1. Keep these versions compatible and update them together only after staging tests.
+- This branch pins the PocketBase server to 0.42.2 and the official JavaScript SDK to 0.28.2. Keep these versions compatible and update them together only after staging tests.
 - PocketBase is still pre-1.0. Its official documentation warns that backward compatibility is not guaranteed and that production-critical deployments need changelog review and occasional manual migration work. Maintain off-service backups and test restores before every upgrade.
 - The upstream project moved development away from its archived GitHub repository to the maintainer's host; it has not been abandoned. Follow the official documentation/changelog for security and release updates.
 
