@@ -6,7 +6,7 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=esm --outfile=server.js --external:express --external:dotenv --external:vite --external:pg --external:unzipper",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=esm --outfile=server.js --external:express --external:dotenv --external:vite --external:pg --external:unzipper --external:@aws-sdk/client-s3",
     "start": "node server.js",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
