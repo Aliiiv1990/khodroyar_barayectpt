@@ -1745,7 +1745,7 @@ async function importParsedListingsToPocketBase(
         if (phone && !preserveManualEdit) {
           try {
             const contact = await pb.collection('listing_contacts').getFirstListItem(pb.filter('listing_id = {:listingId}', { listingId: String(item.id) }));
-            await pb.collection('listing_contacts').update(contact.id, { phone_number: phone, owner_id: userId });
+            await pb.collection('listing_contacts').update(contact.id, { phone_number: phone, owner_id: String(contact.owner_id || userId) });
           } catch (error: any) {
             if (error?.status !== 404) throw error;
             await pb.collection('listing_contacts').create({ listing_id: String(item.id), phone_number: phone, owner_id: userId });
