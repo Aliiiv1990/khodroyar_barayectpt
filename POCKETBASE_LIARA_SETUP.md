@@ -9,7 +9,7 @@ This branch is a migration workspace. It does not change the live Liara app.
 4. Keep a separate backup of the PocketBase data directory and uploaded files. The Node app's `/data` staging disk is separate from this PocketBase disk.
 
 ## Initial setup
-1. Deploy `Dockerfile.pocketbase` as a separate Docker service. It builds PocketBase 0.42.1 from the maintainer's current Go module host and copies the `pb_migrations/` directory; PocketBase applies pending migrations automatically on startup.
+1. Deploy `Dockerfile.pocketbase` as a separate Docker service. It downloads the official PocketBase 0.42.1 Linux release binary from the maintainer's official host and copies the `pb_migrations/` directory; PocketBase applies pending migrations automatically on startup.
 2. Create the first PocketBase superuser through the Liara console using `/pb/pocketbase superuser create admin@example.com 'REPLACE_WITH_A_STRONG_PASSWORD'` (replace both placeholders; do not commit the password).
 3. Open the PocketBase dashboard and create one record in the `users` auth collection for each person. Set `display_name`, `role` (`admin` or `colleague`), `enabled=true`, a unique email, and a strong password.
 4. Set frontend build variable `VITE_POCKETBASE_URL` to the HTTPS PocketBase base URL. This is a public API base URL, not a secret.
