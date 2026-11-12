@@ -9,7 +9,7 @@ This branch is a migration workspace. It does not change the live Liara app.
 4. Keep a separate backup of the PocketBase data directory and uploaded files. The Node app's `/data` staging disk is separate from this PocketBase disk.
 
 ## Initial setup
-1. Deploy `Dockerfile.pocketbase` as a separate Docker service. It downloads the official PocketBase 0.42.1 Linux release binary from the maintainer's official host and copies the `pb_migrations/` directory; PocketBase applies pending migrations automatically on startup.
+1. Deploy `Dockerfile.pocketbase` as a separate Docker service. It downloads the official PocketBase 0.42.2 Linux release binary from the maintainer's official host and copies the `pb_migrations/` directory; PocketBase applies pending migrations automatically on startup.
 2. Create the first PocketBase superuser through the Liara console using `/pb/pocketbase superuser create admin@example.com 'REPLACE_WITH_A_STRONG_PASSWORD'` (replace both placeholders; do not commit the password).
 3. Open the PocketBase dashboard and create one record in the `users` auth collection for each person. Set `display_name`, `role` (`admin` or `colleague`), `enabled=true`, a unique email, and a strong password.
 4. Set frontend build variable `VITE_POCKETBASE_URL` to the HTTPS PocketBase base URL. This is a public API base URL, not a secret.
@@ -33,7 +33,7 @@ This branch is a migration workspace. It does not change the live Liara app.
 
 
 ## Version and upgrade policy
-- This branch pins the PocketBase server to 0.42.1 and the official JavaScript SDK to 0.28.1. Keep these versions compatible and update them together only after staging tests.
+- This branch pins the PocketBase server to 0.42.2 and the official JavaScript SDK to 0.28.1. Keep these versions compatible and update them together only after staging tests.
 - PocketBase is still pre-1.0. Its official documentation warns that backward compatibility is not guaranteed and that production-critical deployments need changelog review and occasional manual migration work. Maintain off-service backups and test restores before every upgrade.
 - The upstream project moved development away from its archived GitHub repository to the maintainer's host; it has not been abandoned. Follow the official documentation/changelog for security and release updates.
 
