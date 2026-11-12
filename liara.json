@@ -1,14 +1,14 @@
 {
-  "platform": "node",
-  "app": "carplus",
-  "port": 3000,
+  "app": "khodroyar-pocketbase",
+  "platform": "docker",
+  "port": 8090,
+  "build": {
+    "dockerfile": "./Dockerfile"
+  },
   "disks": [
     {
-      "name": "data",
-      "mountTo": "/data"
+      "name": "pbdata",
+      "mountTo": "/pb/pb_data"
     }
-  ],
-  "node": {
-    "version": "22"
-  }
+  ]
 }
